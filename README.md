@@ -25,8 +25,11 @@ source (preferably an immutable release or commit). `GET /source` returns that
 URL without requiring the service key. Until it is configured, `/v1/chart`
 refuses calculations.
 
-No public remote has been configured by this local project setup, so it must
-not be activated for network users yet.
+The complete public source project is hosted at
+[`github.com/zzzloj/umbra-swiss-ephemeris`](https://github.com/zzzloj/umbra-swiss-ephemeris).
+For a network deployment, configure `AGPL_SOURCE_URL` with the exact immutable
+commit URL that corresponds to the deployed image; do not use a moving branch
+URL.
 
 ## Required configuration
 
