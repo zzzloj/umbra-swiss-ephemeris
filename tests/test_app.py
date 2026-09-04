@@ -217,6 +217,7 @@ class SwissEphemerisServiceTests(unittest.TestCase):
         self.assertIn("composite:shortest_arc_midpoints", result["implemented"]["chartStudies"])
         self.assertIn("astrocartography:mc+ic+asc+dsc", result["implemented"]["chartStudies"])
         self.assertIn("eclipse_search:global+observer_visibility", result["implemented"]["chartStudies"])
+        self.assertIn("event_formula:versioned_house_graph_rules", result["implemented"]["chartStudies"])
 
     def test_solar_return_requires_an_exact_natal_birth_time(self):
         with self.assertRaises(ValueError):
@@ -456,6 +457,116 @@ class SwissEphemerisServiceTests(unittest.TestCase):
 
         self.assertEqual([event.kind for event in events], ["lunar", "solar"])
         self.assertEqual([event.classification for event in events], ["total", "partial"])
+
+    def test_neutral_formula_engine_returns_structural_evidence_not_an_event_label(self):
+        bodies = [
+            "sun",
+            "moon",
+            "mercury",
+            "venus",
+            "mars",
+            "jupiter",
+            "saturn",
+            "uranus",
+            "neptune",
+            "pluto",
+        ]
+        longitudes = [130, 160, 190, 70, 10, 220, 250, 280, 310, 340]
+        positions = [
+            service.Position(
+                body=body,
+                longitudeDegrees=longitude,
+                sign=service.SIGN_NAMES[int(longitude // 30)],
+                degreeInSign=longitude % 30,
+                retrograde=False,
+            )
+            for body, longitude in zip(bodies, longitudes)
+        ]
+        houses = [service.HouseCusp(number=index + 1, longitudeDegrees=index * 30) for index in range(12)]
+        formula = service.EventFormula(
+            id="structure_demo",
+            title="Structural test",
+            school={
+                "id": "neutral-structural-v1",
+                "version": "1",
+                "attribution": "Umbra neutral example",
+                "licence": "neutral",
+            },
+            operator="all",
+            clauses=[
+                {
+                    "id": "ruler_location",
+                    "sourceHouse": 1,
+                    "targetHouse": 1,
+                    "relation": "ruler_in_house",
+                    "sourceRole": "ruler",
+                },
+                {
+                    "id": "measured_aspect",
+                    "sourceHouse": 1,
+                    "targetHouse": 3,
+                    "relation": "aspect",
+                    "sourceRole": "ruler",
+                    "targetRole": "occupant",
+                },
+            ],
+        )
+
+        elements, clauses = service.formula_clause_results(
+            formula,
+            positions,
+            houses,
+            service.major_aspects(positions),
+            "traditional",
+        )
+
+        self.assertTrue(any(element.body == "mars" and element.role == "ruler" for element in elements))
+        self.assertTrue(all(clause.matched for clause in clauses))
+        self.assertEqual(clauses[0].evidence[0].relation, "ruler_in_house")
+        self.assertEqual(clauses[1].evidence[0].aspect.kind, "sextile")
+
+    def test_formula_request_requires_all_ten_planets_and_known_time(self):
+        birth = {
+            "localDate": "1992-05-30",
+            "localTime": "09:30",
+            "timeAccuracy": "exact",
+            "timeZone": "Europe/Lisbon",
+            "location": {"latitude": 38.7223, "longitude": -9.1393},
+        }
+        formula = {
+            "id": "plain",
+            "title": "Plain structural rule",
+            "school": {
+                "id": "neutral-structural-v1",
+                "version": "1",
+                "attribution": "Umbra neutral example",
+                "licence": "neutral",
+            },
+            "clauses": [
+                {
+                    "id": "one",
+                    "sourceHouse": 1,
+                    "targetHouse": 10,
+                    "relation": "ruler_in_house",
+                }
+            ],
+        }
+        with self.assertRaises(ValueError):
+            service.EventFormulaRequest(
+                version="event-formula-request-v1",
+                birth=birth,
+                bodies=["sun", "moon"],
+                rulershipProfile="traditional",
+                formula=formula,
+            )
+        with self.assertRaises(ValueError):
+            service.EventFormulaRequest(
+                version="event-formula-request-v1",
+                birth={**birth, "localTime": None, "timeAccuracy": "unknown"},
+                bodies=list(service.FORMULA_REQUIRED_BODIES),
+                rulershipProfile="traditional",
+                formula=formula,
+            )
 
     def test_readiness_requires_a_real_swiss_data_calculation(self):
         with TemporaryDirectory() as directory:

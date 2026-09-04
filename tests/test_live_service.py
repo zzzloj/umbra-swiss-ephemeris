@@ -259,6 +259,42 @@ class LiveServiceContractTests(unittest.TestCase):
             [eclipse["maximumInstant"] for eclipse in eclipses["eclipses"]],
         )
 
+        formula_status, formula = post_astronomy_module(
+            SERVICE_KEY,
+            "/v1/event-formula",
+            {
+                "version": "event-formula-request-v1",
+                "birth": {**moment, "localDate": "1992-05-30", "localTime": "09:15"},
+                "bodies": ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto"],
+                "rulershipProfile": "traditional",
+                "formula": {
+                    "id": "neutral_demo",
+                    "title": "Neutral structural demo",
+                    "school": {
+                        "id": "neutral-structural-v1",
+                        "version": "1",
+                        "attribution": "Umbra neutral example",
+                        "licence": "neutral",
+                    },
+                    "operator": "all",
+                    "clauses": [
+                        {
+                            "id": "ruler_location",
+                            "sourceHouse": 1,
+                            "targetHouse": 10,
+                            "relation": "ruler_in_house",
+                            "sourceRole": "ruler",
+                        }
+                    ],
+                },
+                "limitations": [],
+            },
+        )
+        self.assertEqual(formula_status, 200)
+        self.assertEqual(formula["version"], "event-formula-response-v1")
+        self.assertEqual(len(formula["houses"]), 12)
+        self.assertEqual(formula["clauseResults"][0]["clauseId"], "ruler_location")
+
 
 if __name__ == "__main__":
     unittest.main()

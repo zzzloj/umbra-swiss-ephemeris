@@ -70,6 +70,20 @@ BodyId = Literal[
     "chiron",
     "proserpina",
 ]
+FORMULA_REQUIRED_BODIES = frozenset(
+    {
+        "sun",
+        "moon",
+        "mercury",
+        "venus",
+        "mars",
+        "jupiter",
+        "saturn",
+        "uranus",
+        "neptune",
+        "pluto",
+    }
+)
 
 # `proserpina` is calculated from the explicit Swiss Ephemeris orbital-elements
 # source. It is not a physical body and should not be represented as one.
@@ -685,6 +699,106 @@ class EclipseSearchResponse(BaseModel):
     limitations: list[str]
 
 
+class FormulaSchoolReference(BaseModel):
+    """Provenance travels with a rule set instead of being implied by a label."""
+
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    version: str = Field(min_length=1, max_length=40)
+    attribution: str = Field(min_length=1, max_length=240)
+    licence: Literal["neutral", "user_supplied", "licensed"]
+
+
+class FormulaClause(BaseModel):
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    sourceHouse: int = Field(ge=1, le=12)
+    targetHouse: int = Field(ge=1, le=12)
+    relation: Literal["ruler_in_house", "aspect"]
+    sourceRole: Literal["ruler", "occupant", "any"] = "any"
+    targetRole: Literal["ruler", "occupant", "any"] = "any"
+
+    @model_validator(mode="after")
+    def relation_has_valid_roles(self) -> "FormulaClause":
+        if self.relation == "ruler_in_house" and self.sourceRole not in {
+            "ruler",
+            "any",
+        }:
+            raise ValueError("ruler_in_house requires a ruler or any source role")
+        return self
+
+
+class EventFormula(BaseModel):
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    title: str = Field(min_length=1, max_length=160)
+    school: FormulaSchoolReference
+    operator: Literal["all", "any"] = "all"
+    clauses: list[FormulaClause] = Field(min_length=1, max_length=24)
+
+    @model_validator(mode="after")
+    def formula_clause_ids_are_unique(self) -> "EventFormula":
+        ids = [clause.id for clause in self.clauses]
+        if len(set(ids)) != len(ids):
+            raise ValueError("formula clause ids must be unique")
+        return self
+
+
+class EventFormulaRequest(BaseModel):
+    version: Literal["event-formula-request-v1"]
+    birth: Birth
+    bodies: list[BodyId] = Field(min_length=10, max_length=16)
+    rulershipProfile: Literal["traditional", "modern"]
+    formula: EventFormula
+    limitations: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def formula_request_has_complete_graph_factors(self) -> "EventFormulaRequest":
+        if self.birth.timeAccuracy == "unknown":
+            raise ValueError("event formulas require a known or approximate birth time")
+        if len(set(self.bodies)) != len(self.bodies):
+            raise ValueError("bodies must not contain duplicates")
+        missing = set(FORMULA_REQUIRED_BODIES) - set(self.bodies)
+        if missing:
+            raise ValueError("event formulas require all ten contract planets")
+        if any(len(value) > 500 for value in self.limitations):
+            raise ValueError("each limitation must be 500 characters or shorter")
+        return self
+
+
+class FormulaHouseElement(BaseModel):
+    house: int = Field(ge=1, le=12)
+    body: str
+    role: Literal["ruler", "occupant"]
+
+
+class FormulaEvidence(BaseModel):
+    relation: Literal["ruler_in_house", "aspect"]
+    sourceHouse: int = Field(ge=1, le=12)
+    sourceBody: str
+    sourceRole: Literal["ruler", "occupant"]
+    targetHouse: int = Field(ge=1, le=12)
+    targetBody: Optional[str] = None
+    targetRole: Optional[Literal["ruler", "occupant", "location"]] = None
+    aspect: Optional[Aspect] = None
+
+
+class FormulaClauseResult(BaseModel):
+    clauseId: str
+    matched: bool
+    evidence: list[FormulaEvidence]
+
+
+class EventFormulaResponse(BaseModel):
+    version: Literal["event-formula-response-v1"] = "event-formula-response-v1"
+    calculatedAt: str
+    request: EventFormulaRequest
+    positions: list[Position]
+    houses: list[HouseCusp]
+    aspects: list[Aspect]
+    houseElements: list[FormulaHouseElement]
+    clauseResults: list[FormulaClauseResult]
+    matched: bool
+    limitations: list[str]
+
+
 def require_compliant_settings() -> Settings:
     current = settings()
     if current.licence_mode == "agpl" and not current.agpl_source_url:
@@ -885,6 +999,197 @@ def placidus_geometry(
             angle_for("midheaven", ascmc[1]),
         ],
     )
+
+
+TRADITIONAL_SIGN_RULERS = {
+    "Aries": ("mars",),
+    "Taurus": ("venus",),
+    "Gemini": ("mercury",),
+    "Cancer": ("moon",),
+    "Leo": ("sun",),
+    "Virgo": ("mercury",),
+    "Libra": ("venus",),
+    "Scorpio": ("mars",),
+    "Sagittarius": ("jupiter",),
+    "Capricorn": ("saturn",),
+    "Aquarius": ("saturn",),
+    "Pisces": ("jupiter",),
+}
+MODERN_SIGN_RULERS = {
+    **TRADITIONAL_SIGN_RULERS,
+    "Scorpio": ("pluto",),
+    "Aquarius": ("uranus",),
+    "Pisces": ("neptune",),
+}
+
+
+def house_for_longitude(longitude: float, houses: list[HouseCusp]) -> int:
+    """Assign a longitude to the explicitly returned Placidus house intervals."""
+
+    if len(houses) != 12:
+        raise ServiceError(
+            502,
+            "formula_houses_unavailable",
+            "Formula evaluation needs twelve calculated house cusps.",
+        )
+    by_number = {house.number: house.longitudeDegrees for house in houses}
+    if len(by_number) != 12:
+        raise ServiceError(
+            502,
+            "formula_houses_unavailable",
+            "Formula evaluation needs twelve distinct house cusps.",
+        )
+    for number in range(1, 13):
+        start = by_number[number]
+        end = by_number[1 if number == 12 else number + 1]
+        span = (end - start) % 360
+        distance = (longitude - start) % 360
+        if span > 0 and distance < span:
+            return number
+    raise ServiceError(
+        502,
+        "formula_house_assignment_failed",
+        "Formula evaluation could not assign a factor to a calculated house.",
+    )
+
+
+def sign_for_longitude(longitude: float) -> str:
+    return SIGN_NAMES[int((longitude % 360) // 30)]
+
+
+def formula_house_elements(
+    positions: list[Position],
+    houses: list[HouseCusp],
+    rulership_profile: Literal["traditional", "modern"],
+) -> list[FormulaHouseElement]:
+    """Create transparent house occupants and cusp rulers for a rule graph."""
+
+    positions_by_body = {position.body: position for position in positions}
+    result: list[FormulaHouseElement] = []
+    for position in positions:
+        result.append(
+            FormulaHouseElement(
+                house=house_for_longitude(position.longitudeDegrees, houses),
+                body=position.body,
+                role="occupant",
+            )
+        )
+    ruler_map = (
+        TRADITIONAL_SIGN_RULERS
+        if rulership_profile == "traditional"
+        else MODERN_SIGN_RULERS
+    )
+    for house in houses:
+        sign = sign_for_longitude(house.longitudeDegrees)
+        for ruler in ruler_map[sign]:
+            if ruler not in positions_by_body:
+                raise ServiceError(
+                    422,
+                    "formula_ruler_missing",
+                    "Formula evaluation needs the complete declared rulership profile.",
+                )
+            result.append(FormulaHouseElement(house=house.number, body=ruler, role="ruler"))
+    return result
+
+
+def formula_role_matches(
+    element: FormulaHouseElement, requested: Literal["ruler", "occupant", "any"]
+) -> bool:
+    return requested == "any" or element.role == requested
+
+
+def formula_aspect_lookup(aspects: list[Aspect]) -> dict[frozenset[str], Aspect]:
+    return {frozenset(aspect.between): aspect for aspect in aspects}
+
+
+def formula_clause_results(
+    formula: EventFormula,
+    positions: list[Position],
+    houses: list[HouseCusp],
+    aspects: list[Aspect],
+    rulership_profile: Literal["traditional", "modern"],
+) -> tuple[list[FormulaHouseElement], list[FormulaClauseResult]]:
+    elements = formula_house_elements(positions, houses, rulership_profile)
+    positions_by_body = {position.body: position for position in positions}
+    aspect_by_bodies = formula_aspect_lookup(aspects)
+    results: list[FormulaClauseResult] = []
+    for clause in formula.clauses:
+        sources = [
+            element
+            for element in elements
+            if element.house == clause.sourceHouse
+            and formula_role_matches(element, clause.sourceRole)
+        ]
+        evidence: list[FormulaEvidence] = []
+        if clause.relation == "ruler_in_house":
+            for source in sources:
+                if source.role != "ruler":
+                    continue
+                if house_for_longitude(
+                    positions_by_body[source.body].longitudeDegrees, houses
+                ) == clause.targetHouse:
+                    evidence.append(
+                        FormulaEvidence(
+                            relation="ruler_in_house",
+                            sourceHouse=clause.sourceHouse,
+                            sourceBody=source.body,
+                            sourceRole=source.role,
+                            targetHouse=clause.targetHouse,
+                            targetBody=source.body,
+                            targetRole="location",
+                        )
+                    )
+        else:
+            targets = [
+                element
+                for element in elements
+                if element.house == clause.targetHouse
+                and formula_role_matches(element, clause.targetRole)
+            ]
+            for source in sources:
+                for target in targets:
+                    if source.body == target.body:
+                        continue
+                    aspect = aspect_by_bodies.get(frozenset({source.body, target.body}))
+                    if aspect is not None:
+                        evidence.append(
+                            FormulaEvidence(
+                                relation="aspect",
+                                sourceHouse=clause.sourceHouse,
+                                sourceBody=source.body,
+                                sourceRole=source.role,
+                                targetHouse=clause.targetHouse,
+                                targetBody=target.body,
+                                targetRole=target.role,
+                                aspect=aspect,
+                            )
+                        )
+        results.append(
+            FormulaClauseResult(
+                clauseId=clause.id,
+                matched=bool(evidence),
+                evidence=evidence,
+            )
+        )
+    return elements, results
+
+
+def event_formula_limitations(request: EventFormulaRequest) -> list[str]:
+    values = list(request.limitations)
+    values.extend(
+        [
+            "The engine evaluates only the declared structural clauses. A match is not a prediction, probability, diagnosis, or statement that an event will occur.",
+            "Formula attribution, version, and licence are returned with the rule. The service ships no proprietary or school-specific formula catalogue.",
+            f"House rulers use the explicitly selected {request.rulershipProfile} profile; formula schools can provide separately versioned profiles later.",
+            "Major aspects use a fixed 6° orb.",
+            "House cusps use the Placidus house system.",
+        ]
+    )
+    if request.birth.timeAccuracy == "approximate":
+        values.append(
+            "Birth time is approximate. House-based formula evidence has reduced confidence."
+        )
+    return list(dict.fromkeys(values))
 
 
 def response_limitations(request: ChartRequest, time_is_unknown: bool) -> list[str]:
@@ -1747,6 +2052,7 @@ def capabilities():
                 "mundane:ingress",
                 "astrocartography:mc+ic+asc+dsc",
                 "eclipse_search:global+observer_visibility",
+                "event_formula:versioned_house_graph_rules",
             ],
         },
         "extendedFactors": [
@@ -1862,6 +2168,64 @@ def search_eclipses(
         request=request,
         eclipses=events,
         limitations=limitations,
+    )
+
+
+@api.post("/v1/event-formula", response_model=EventFormulaResponse)
+def evaluate_event_formula(
+    request: EventFormulaRequest,
+    current: Settings = Depends(authenticate),
+) -> EventFormulaResponse:
+    """Evaluate a user-supplied, versioned formula against a natal house graph.
+
+    The endpoint intentionally accepts formula definitions as data. This keeps
+    the calculator extensible for independently licensed schools while avoiding
+    a hidden or inferred formula catalogue in the service.
+    """
+
+    configure_ephemeris_data(current)
+    try:
+        instant, is_date_level = utc_birth_instant(request.birth)
+        if is_date_level:
+            raise ServiceError(
+                422,
+                "formula_requires_known_birth_time",
+                "Event formula evaluation requires a known or approximate birth time.",
+            )
+        jd_ut = julian_day(instant)
+        positions = [position_for(jd_ut, body) for body in request.bodies]
+        houses, _ = placidus_geometry(jd_ut, request.birth.location)
+        aspects = major_aspects(positions)
+        elements, clause_results = formula_clause_results(
+            request.formula,
+            positions,
+            houses,
+            aspects,
+            request.rulershipProfile,
+        )
+    except ServiceError:
+        raise
+    except swe.Error as error:
+        raise ServiceError(
+            502,
+            "swiss_ephemeris_error",
+            "Swiss Ephemeris could not complete this event formula evaluation.",
+        ) from error
+    matched = (
+        all(result.matched for result in clause_results)
+        if request.formula.operator == "all"
+        else any(result.matched for result in clause_results)
+    )
+    return EventFormulaResponse(
+        calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        request=request,
+        positions=positions,
+        houses=houses,
+        aspects=aspects,
+        houseElements=elements,
+        clauseResults=clause_results,
+        matched=matched,
+        limitations=event_formula_limitations(request),
     )
 
 

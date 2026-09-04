@@ -47,6 +47,15 @@ next globally occurring solar and/or lunar eclipses in UTC, with optional
 observer-at-maximum geometry. Neither endpoint interprets a location or an
 eclipse, recommends actions, or predicts outcomes.
 
+`POST /v1/event-formula` is a neutral Formula Event Engine. It evaluates a
+versioned formula supplied in the request as transparent house-graph clauses:
+`ruler_in_house` and measured major `aspect` links between declared house
+elements. A formula carries its school identifier, version, attribution, and
+licence status, so independently licensed schools can be connected later. The
+service distributes no school-specific formula catalogue, labels no clause as
+an event, and never turns a structural match into a prediction or probability.
+Traditional and modern rulership profiles are explicit calculation options.
+
 ## Source availability for AGPL deployments
 
 `LICENSE` contains the complete GNU AGPL v3 text. The upstream Swiss Ephemeris
@@ -59,7 +68,7 @@ instructions, dependency pins, notices, and the exact running changes. Set
 source (preferably an immutable release or commit). `GET /source` returns that
 URL without requiring the service key. Until it is configured, `/v1/chart`,
 `/v1/solar-return`, `/v1/chart-study`, `/v1/astrocartography`, and
-`/v1/eclipses` refuse calculations.
+`/v1/eclipses`, and `/v1/event-formula` refuse calculations.
 
 The complete public source project is hosted at
 [`github.com/zzzloj/umbra-swiss-ephemeris`](https://github.com/zzzloj/umbra-swiss-ephemeris).
@@ -105,7 +114,8 @@ The service accepts `POST /v1/chart` with the `ephemeris-request-v1` body and
 the `x-umbra-service-key` header. `POST /v1/chart-study` accepts the
 `chart-study-request-v1` body for the named non-natal methods; `POST
 /v1/astrocartography` accepts `astrocartography-request-v1`; and `POST
-/v1/eclipses` accepts `eclipse-search-request-v1`. Each has the same
+/v1/eclipses` accepts `eclipse-search-request-v1`; `POST /v1/event-formula`
+accepts `event-formula-request-v1`. Each has the same
 authentication requirement. `GET /healthz` is a non-sensitive readiness probe
 and does not disclose birth data. In AGPL mode, `GET /source` supplies the
 configured public source offer and never exposes configuration secrets.
@@ -127,7 +137,8 @@ scripts/run-local-contract-test.sh
 This brings up the service on `127.0.0.1:18080`, verifies its source offer,
 authentication, four actual Swiss-data positions, aspects, Placidus houses,
 one real Solar Return recurrence, every named chart study, astrocartography
-line geometry, and an eclipse-search chronology, then shuts it down. Its
+line geometry, an eclipse-search chronology, and a formula evaluation, then
+shuts it down. Its
 `file://` source offer is deliberately
 restricted to a developer's loopback test and is not a substitute for the
 public `AGPL_SOURCE_URL` required by a network deployment. See
