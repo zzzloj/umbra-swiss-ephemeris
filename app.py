@@ -318,6 +318,23 @@ def configure_ephemeris_data(current: Settings) -> None:
     swe.set_ephe_path(str(current.ephemeris_path))
 
 
+def swiss_data_is_ready(current: Settings) -> bool:
+    """Confirm a configured data directory can make a Swiss-data calculation.
+
+    A directory existence check alone is not meaningful: an empty mount or a
+    partial data set would otherwise be marked ready and fail only on the
+    first person-facing request. This probe uses a fixed, non-user date and
+    still rejects any fallback that does not report the Swiss Ephemeris flag.
+    """
+
+    try:
+        configure_ephemeris_data(current)
+        _, flags, _ = swe.calc_ut(2451545.0, swe.SUN, swe.FLG_SWIEPH)
+    except (ServiceError, swe.Error):
+        return False
+    return bool(flags & swe.FLG_SWIEPH)
+
+
 def position_for(jd_ut: float, body: str) -> Position:
     coordinates, flags, _ = swe.calc_ut(
         jd_ut,
@@ -401,9 +418,8 @@ def healthz():
     ) or (current.licence_mode == "agpl" and bool(current.agpl_source_url))
     ready_for_requests = bool(
         current.service_key
-        and current.ephemeris_path
-        and current.ephemeris_path.is_dir()
         and licence_ready
+        and swiss_data_is_ready(current)
     )
     return {"ok": True, "calculator": "swiss-ephemeris", "ready": ready_for_requests}
 

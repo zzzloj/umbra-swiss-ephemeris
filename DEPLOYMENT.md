@@ -43,8 +43,10 @@ For the current MVP date range, the local test uses `sepl_18.se1` and
 mount the directory read-only through `SWE_EPHEMERIS_DATA_DIR`.
 
 The calculator deliberately fails rather than falling back to Moshier data.
-When expanding the supported year range or bodies, update this data set and
-repeat the integration check.
+`/healthz` also performs a fixed, non-user Swiss-data probe, so it is not
+ready for traffic merely because a mount directory exists. When expanding the
+supported year range or bodies, update this data set and repeat the integration
+check.
 
 ## Reference Compose launch
 

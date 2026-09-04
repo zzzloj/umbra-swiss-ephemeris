@@ -4,6 +4,8 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "app.py"
 SPEC = importlib.util.spec_from_file_location("swiss_ephemeris_app", MODULE_PATH)
@@ -112,6 +114,30 @@ class SwissEphemerisServiceTests(unittest.TestCase):
             service.position_for(2451545.0, "sun")
 
         self.assertEqual(captured.exception.code, "ephemeris_data_unavailable")
+
+    def test_readiness_requires_a_real_swiss_data_calculation(self):
+        with TemporaryDirectory() as directory:
+            configured = service.Settings(
+                service_key="service-key",
+                ephemeris_path=Path(directory),
+                licence_mode="agpl",
+                agpl_source_url="https://code.example/umbra-swiss/v1",
+                professional_licence_reference=None,
+            )
+
+            with patch.object(
+                service.swe,
+                "calc_ut",
+                return_value=((0, 0, 0, 0, 0, 0), service.swe.FLG_SWIEPH, ""),
+            ):
+                self.assertTrue(service.swiss_data_is_ready(configured))
+
+            with patch.object(
+                service.swe,
+                "calc_ut",
+                return_value=((0, 0, 0, 0, 0, 0), service.swe.FLG_MOSEPH, ""),
+            ):
+                self.assertFalse(service.swiss_data_is_ready(configured))
 
     def test_agpl_source_offer_is_public_but_contains_no_secret(self):
         original_mode = os.environ.get("SWISS_EPHEMERIS_LICENSE_MODE")
