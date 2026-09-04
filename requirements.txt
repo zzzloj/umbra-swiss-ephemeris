@@ -1,0 +1,3 @@
+fastapi==0.128.8
+pysweph==2.10.3.6
+uvicorn==0.38.0
