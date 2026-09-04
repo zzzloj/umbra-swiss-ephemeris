@@ -11,6 +11,7 @@ from __future__ import annotations
 import hmac
 import os
 import re
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from functools import lru_cache
@@ -246,6 +247,69 @@ class ChartResponse(BaseModel):
     limitations: list[str]
 
 
+class SolarReturnRequest(BaseModel):
+    version: Literal["solar-return-request-v1"]
+    natal: Birth
+    returnYear: int = Field(ge=1600, le=2600)
+    returnLocation: Location
+    returnTimeZone: str
+    bodies: list[Literal[
+        "sun",
+        "moon",
+        "mercury",
+        "venus",
+        "mars",
+        "jupiter",
+        "saturn",
+        "uranus",
+        "neptune",
+        "pluto",
+        "north_node",
+        "south_node",
+    ]] = Field(min_length=1, max_length=12)
+    features: list[Literal["positions", "aspects", "houses", "angles"]] = Field(
+        min_length=1, max_length=4
+    )
+    limitations: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("returnTimeZone")
+    @classmethod
+    def valid_return_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("returnTimeZone must be a valid IANA timezone") from error
+        return value
+
+    @model_validator(mode="after")
+    def solar_return_requires_precise_natal_data(self) -> "SolarReturnRequest":
+        if self.natal.timeAccuracy != "exact":
+            raise ValueError("solar return requires an exact natal birth time")
+        if len(set(self.bodies)) != len(self.bodies):
+            raise ValueError("bodies must not contain duplicates")
+        if len(set(self.features)) != len(self.features):
+            raise ValueError("features must not contain duplicates")
+        if "positions" not in self.features:
+            raise ValueError("positions are required for every solar return")
+        if any(len(value) > 500 for value in self.limitations):
+            raise ValueError("each limitation must be 500 characters or shorter")
+        return self
+
+
+class SolarReturnResponse(BaseModel):
+    version: Literal["solar-return-response-v1"] = "solar-return-response-v1"
+    calculatedAt: str
+    request: SolarReturnRequest
+    returnInstant: str
+    returnLocalDateTime: str
+    natalSunLongitudeDegrees: float
+    positions: list[Position]
+    aspects: Optional[list[Aspect]] = None
+    houses: Optional[list[HouseCusp]] = None
+    angles: Optional[list[ChartAngle]] = None
+    limitations: list[str]
+
+
 def require_compliant_settings() -> Settings:
     current = settings()
     if current.licence_mode == "agpl" and not current.agpl_source_url:
@@ -416,12 +480,12 @@ def major_aspects(positions: list[Position]) -> list[Aspect]:
 
 
 def placidus_geometry(
-    jd_ut: float, birth: Birth
+    jd_ut: float, location: Location
 ) -> tuple[list[HouseCusp], list[ChartAngle]]:
     cusps, ascmc = swe.houses_ex(
         jd_ut,
-        birth.location.latitude,
-        birth.location.longitude,
+        location.latitude,
+        location.longitude,
         b"P",
         swe.FLG_SWIEPH,
     )
@@ -447,6 +511,100 @@ def response_limitations(request: ChartRequest, time_is_unknown: bool) -> list[s
         values.append(
             "Birth time is approximate. Placidus house cusps and angles should be treated with reduced confidence."
         )
+    if "aspects" in request.features:
+        values.append("Major aspects use a fixed 6° orb.")
+    if "houses" in request.features:
+        values.append("House cusps use the Placidus house system.")
+    if "angles" in request.features:
+        values.append("Angles return direct Ascendant and Midheaven coordinates.")
+    return list(dict.fromkeys(values))
+
+
+def solar_longitude(jd_ut: float) -> float:
+    coordinates, flags, _ = swe.calc_ut(jd_ut, swe.SUN, swe.FLG_SWIEPH)
+    if not flags & swe.FLG_SWIEPH:
+        raise ServiceError(
+            503,
+            "ephemeris_data_unavailable",
+            "Swiss Ephemeris data could not be used for this calculation.",
+        )
+    return float(coordinates[0]) % 360
+
+
+def signed_longitude_difference(current: float, target: float) -> float:
+    """Return the signed shortest angular difference in [-180, 180)."""
+
+    return (current - target + 180) % 360 - 180
+
+
+def solar_return_instant(natal_instant: datetime, return_year: int) -> tuple[datetime, float]:
+    """Find the exact tropical solar recurrence near the natal calendar date.
+
+    The Sun's longitude is monotonic over the narrow search interval. We use
+    Swiss Ephemeris at every evaluation and bisection only after bracketing the
+    zero, which keeps the returned instant traceable to the astronomy provider.
+    """
+
+    natal_jd = julian_day(natal_instant)
+    natal_longitude = solar_longitude(natal_jd)
+    last_day = monthrange(return_year, natal_instant.month)[1]
+    anchor = datetime(
+        return_year,
+        natal_instant.month,
+        min(natal_instant.day, last_day),
+        12,
+        tzinfo=timezone.utc,
+    )
+    lower_jd = julian_day(anchor) - 4
+    upper_jd = julian_day(anchor) + 4
+    lower_delta = signed_longitude_difference(solar_longitude(lower_jd), natal_longitude)
+    upper_delta = signed_longitude_difference(solar_longitude(upper_jd), natal_longitude)
+    if lower_delta > 0 or upper_delta < 0:
+        raise ServiceError(
+            502,
+            "solar_return_not_bracketed",
+            "Swiss Ephemeris could not bracket the requested solar return.",
+        )
+
+    for _ in range(48):
+        middle_jd = (lower_jd + upper_jd) / 2
+        middle_delta = signed_longitude_difference(
+            solar_longitude(middle_jd), natal_longitude
+        )
+        if middle_delta < 0:
+            lower_jd = middle_jd
+        else:
+            upper_jd = middle_jd
+
+    instant = swe.revjul((lower_jd + upper_jd) / 2, swe.GREG_CAL)
+    year, month, day, hour = instant
+    whole_hour = int(hour)
+    minute_value = (hour - whole_hour) * 60
+    whole_minute = int(minute_value)
+    second_value = (minute_value - whole_minute) * 60
+    return (
+        datetime(
+            year,
+            month,
+            day,
+            whole_hour,
+            whole_minute,
+            int(second_value),
+            int((second_value % 1) * 1_000_000),
+            tzinfo=timezone.utc,
+        ),
+        natal_longitude,
+    )
+
+
+def solar_return_limitations(request: SolarReturnRequest) -> list[str]:
+    values = list(dict.fromkeys(request.limitations))
+    values.append(
+        "Solar Return is the exact tropical geocentric recurrence of the natal solar longitude."
+    )
+    values.append(
+        "Return houses and angles use the selected return location, not the natal location."
+    )
     if "aspects" in request.features:
         values.append("Major aspects use a fixed 6° orb.")
     if "houses" in request.features:
@@ -498,7 +656,7 @@ def calculate_chart(
     try:
         positions = [position_for(jd_ut, body) for body in request.bodies]
         geometry = (
-            placidus_geometry(jd_ut, request.birth)
+            placidus_geometry(jd_ut, request.birth.location)
             if "houses" in request.features or "angles" in request.features
             else None
         )
@@ -521,4 +679,55 @@ def calculate_chart(
         houses=houses,
         angles=angles,
         limitations=response_limitations(request, time_is_unknown),
+    )
+
+
+@api.post("/v1/solar-return", response_model=SolarReturnResponse)
+def calculate_solar_return(
+    request: SolarReturnRequest,
+    current: Settings = Depends(authenticate),
+) -> SolarReturnResponse:
+    configure_ephemeris_data(current)
+    natal_instant, is_date_level = utc_birth_instant(request.natal)
+    if is_date_level:
+        raise ServiceError(
+            422,
+            "solar_return_requires_exact_time",
+            "Solar Return requires an exact natal birth time.",
+        )
+    try:
+        return_instant, natal_sun_longitude = solar_return_instant(
+            natal_instant, request.returnYear
+        )
+        return_jd = julian_day(return_instant)
+        positions = [position_for(return_jd, body) for body in request.bodies]
+        geometry = (
+            placidus_geometry(return_jd, request.returnLocation)
+            if "houses" in request.features or "angles" in request.features
+            else None
+        )
+        houses = geometry[0] if geometry and "houses" in request.features else None
+        angles = geometry[1] if geometry and "angles" in request.features else None
+    except ServiceError:
+        raise
+    except swe.Error as error:
+        raise ServiceError(
+            502,
+            "swiss_ephemeris_error",
+            "Swiss Ephemeris could not complete this calculation.",
+        ) from error
+
+    return SolarReturnResponse(
+        calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        request=request,
+        returnInstant=return_instant.isoformat().replace("+00:00", "Z"),
+        returnLocalDateTime=return_instant.astimezone(
+            ZoneInfo(request.returnTimeZone)
+        ).isoformat(),
+        natalSunLongitudeDegrees=round(natal_sun_longitude, 6),
+        positions=positions,
+        aspects=major_aspects(positions) if "aspects" in request.features else None,
+        houses=houses,
+        angles=angles,
+        limitations=solar_return_limitations(request),
     )

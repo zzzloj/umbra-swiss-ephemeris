@@ -142,6 +142,40 @@ class SwissEphemerisServiceTests(unittest.TestCase):
             "retrograde": True,
         })
 
+    def test_solar_return_requires_an_exact_natal_birth_time(self):
+        with self.assertRaises(ValueError):
+            service.SolarReturnRequest(
+                version="solar-return-request-v1",
+                natal={
+                    "localDate": "1992-05-30",
+                    "localTime": "09:30",
+                    "timeAccuracy": "approximate",
+                    "timeZone": "Europe/Lisbon",
+                    "location": {"latitude": 38.7223, "longitude": -9.1393},
+                },
+                returnYear=2026,
+                returnLocation={"latitude": 38.7223, "longitude": -9.1393},
+                returnTimeZone="Europe/Lisbon",
+                bodies=["sun"],
+                features=["positions"],
+            )
+
+    def test_solar_return_solves_the_solar_recurrence_within_seconds(self):
+        natal = datetime(2000, 6, 1, 12, tzinfo=timezone.utc)
+        natal_jd = service.julian_day(natal)
+        days_per_year = 365.2422
+
+        with patch.object(
+            service,
+            "solar_longitude",
+            side_effect=lambda jd: (210 + (jd - natal_jd) * 360 / days_per_year) % 360,
+        ):
+            returned, longitude = service.solar_return_instant(natal, 2001)
+
+        elapsed_seconds = (returned - natal).total_seconds()
+        self.assertAlmostEqual(elapsed_seconds, days_per_year * 86_400, delta=2)
+        self.assertEqual(longitude, 210)
+
     def test_birth_input_format_is_not_silently_broadened(self):
         with self.assertRaises(ValueError):
             service.Birth(
