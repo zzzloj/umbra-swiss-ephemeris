@@ -99,6 +99,33 @@ class SwissEphemerisServiceTests(unittest.TestCase):
                 features=["positions", "houses"],
             )
 
+    def test_unknown_birth_time_cannot_request_angles(self):
+        with self.assertRaises(ValueError):
+            service.ChartRequest(
+                version="ephemeris-request-v1",
+                birth={
+                    "localDate": "1992-05-30",
+                    "timeAccuracy": "unknown",
+                    "timeZone": "Europe/Lisbon",
+                    "location": {"latitude": 38.7223, "longitude": -9.1393},
+                },
+                bodies=["sun", "north_node"],
+                features=["positions", "angles"],
+            )
+
+    def test_direct_angles_keep_sign_and_degree_separate(self):
+        ascendant = service.angle_for("ascendant", 215.25)
+        midheaven = service.angle_for("midheaven", 287.5)
+
+        self.assertEqual(ascendant.model_dump(), {
+            "name": "ascendant",
+            "longitudeDegrees": 215.25,
+            "sign": "Scorpio",
+            "degreeInSign": 5.25,
+        })
+        self.assertEqual(midheaven.sign, "Capricorn")
+        self.assertEqual(midheaven.degreeInSign, 17.5)
+
     def test_birth_input_format_is_not_silently_broadened(self):
         with self.assertRaises(ValueError):
             service.Birth(

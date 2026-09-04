@@ -8,8 +8,9 @@ not vendor this code, its Python environment, or its calculator binary: it
 may call a deployed instance only through a server-to-server HTTP interface.
 
 It calculates tropical, geocentric ecliptic longitudes in UT for the ten
-contract bodies; it can derive five major aspects with a 6° orb and Placidus
-house cusps when the request asks for them. It returns measurements and
+contract planets plus the True North Node; it can derive five major aspects
+with a 6° orb, Placidus house cusps, and direct Ascendant/Midheaven
+coordinates when the request asks for them. It returns measurements and
 limitations only. Interpretation remains in Umbra's editorial layer.
 
 ## Source availability for AGPL deployments

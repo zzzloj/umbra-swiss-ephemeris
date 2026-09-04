@@ -44,6 +44,7 @@ BODY_CODES = {
     "uranus": swe.URANUS,
     "neptune": swe.NEPTUNE,
     "pluto": swe.PLUTO,
+    "north_node": swe.TRUE_NODE,
 }
 SIGN_NAMES = (
     "Aries",
@@ -177,9 +178,10 @@ class ChartRequest(BaseModel):
         "uranus",
         "neptune",
         "pluto",
-    ]] = Field(min_length=1, max_length=10)
-    features: list[Literal["positions", "aspects", "houses"]] = Field(
-        min_length=1, max_length=3
+        "north_node",
+    ]] = Field(min_length=1, max_length=11)
+    features: list[Literal["positions", "aspects", "houses", "angles"]] = Field(
+        min_length=1, max_length=4
     )
     limitations: list[str] = Field(default_factory=list, max_length=32)
 
@@ -198,8 +200,10 @@ class ChartRequest(BaseModel):
             raise ValueError("features must not contain duplicates")
         if "positions" not in self.features:
             raise ValueError("positions are required for every chart request")
-        if self.birth.timeAccuracy == "unknown" and "houses" in self.features:
-            raise ValueError("houses require a known or approximate birth time")
+        if self.birth.timeAccuracy == "unknown" and (
+            "houses" in self.features or "angles" in self.features
+        ):
+            raise ValueError("houses and angles require a known or approximate birth time")
         return self
 
 
@@ -223,6 +227,13 @@ class HouseCusp(BaseModel):
     longitudeDegrees: float = Field(ge=0, lt=360)
 
 
+class ChartAngle(BaseModel):
+    name: Literal["ascendant", "midheaven"]
+    longitudeDegrees: float = Field(ge=0, lt=360)
+    sign: str
+    degreeInSign: float = Field(ge=0, lt=30)
+
+
 class ChartResponse(BaseModel):
     version: Literal["ephemeris-response-v1"] = "ephemeris-response-v1"
     calculatedAt: str
@@ -230,6 +241,7 @@ class ChartResponse(BaseModel):
     positions: list[Position]
     aspects: Optional[list[Aspect]] = None
     houses: Optional[list[HouseCusp]] = None
+    angles: Optional[list[ChartAngle]] = None
     limitations: list[str]
 
 
@@ -358,6 +370,17 @@ def position_for(jd_ut: float, body: str) -> Position:
     )
 
 
+def angle_for(name: Literal["ascendant", "midheaven"], longitude: float) -> ChartAngle:
+    normalized = float(longitude) % 360
+    sign_index = int(normalized // 30)
+    return ChartAngle(
+        name=name,
+        longitudeDegrees=round(normalized, 6),
+        sign=SIGN_NAMES[sign_index],
+        degreeInSign=round(normalized % 30, 6),
+    )
+
+
 def major_aspects(positions: list[Position]) -> list[Aspect]:
     result: list[Aspect] = []
     for first, second in combinations(positions, 2):
@@ -378,18 +401,26 @@ def major_aspects(positions: list[Position]) -> list[Aspect]:
     return result
 
 
-def placidus_houses(jd_ut: float, birth: Birth) -> list[HouseCusp]:
-    cusps, _ = swe.houses_ex(
+def placidus_geometry(
+    jd_ut: float, birth: Birth
+) -> tuple[list[HouseCusp], list[ChartAngle]]:
+    cusps, ascmc = swe.houses_ex(
         jd_ut,
         birth.location.latitude,
         birth.location.longitude,
         b"P",
         swe.FLG_SWIEPH,
     )
-    return [
-        HouseCusp(number=index, longitudeDegrees=round(float(cusps[index]) % 360, 6))
-        for index in range(1, 13)
-    ]
+    return (
+        [
+            HouseCusp(number=index, longitudeDegrees=round(float(cusps[index]) % 360, 6))
+            for index in range(1, 13)
+        ],
+        [
+            angle_for("ascendant", ascmc[0]),
+            angle_for("midheaven", ascmc[1]),
+        ],
+    )
 
 
 def response_limitations(request: ChartRequest, time_is_unknown: bool) -> list[str]:
@@ -406,6 +437,8 @@ def response_limitations(request: ChartRequest, time_is_unknown: bool) -> list[s
         values.append("Major aspects use a fixed 6° orb.")
     if "houses" in request.features:
         values.append("House cusps use the Placidus house system.")
+    if "angles" in request.features:
+        values.append("Angles return direct Ascendant and Midheaven coordinates.")
     return list(dict.fromkeys(values))
 
 
@@ -450,11 +483,13 @@ def calculate_chart(
     jd_ut = julian_day(instant)
     try:
         positions = [position_for(jd_ut, body) for body in request.bodies]
-        houses = (
-            placidus_houses(jd_ut, request.birth)
-            if "houses" in request.features
+        geometry = (
+            placidus_geometry(jd_ut, request.birth)
+            if "houses" in request.features or "angles" in request.features
             else None
         )
+        houses = geometry[0] if geometry and "houses" in request.features else None
+        angles = geometry[1] if geometry and "angles" in request.features else None
     except ServiceError:
         raise
     except swe.Error as error:
@@ -470,5 +505,6 @@ def calculate_chart(
         positions=positions,
         aspects=major_aspects(positions) if "aspects" in request.features else None,
         houses=houses,
+        angles=angles,
         limitations=response_limitations(request, time_is_unknown),
     )
