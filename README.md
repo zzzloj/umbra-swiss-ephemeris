@@ -66,6 +66,24 @@ the `x-umbra-service-key` header. `GET /healthz` is a non-sensitive readiness
 probe and does not disclose birth data. In AGPL mode, `GET /source` supplies
 the configured public source offer and never exposes configuration secrets.
 
+## Test a real local calculation
+
+With a Python virtual environment available and an authorised local directory
+containing `sepl_18.se1` and `semo_18.se1`, run:
+
+```bash
+PYTHON_BIN=/path/to/python \
+SWE_EPHEMERIS_DATA_DIR=/absolute/path/to/ephemeris-data \
+scripts/run-local-contract-test.sh
+```
+
+This brings up the service on `127.0.0.1:18080`, verifies its source offer,
+authentication, four actual Swiss-data positions, aspects, and Placidus
+houses, then shuts it down. Its `file://` source offer is deliberately
+restricted to a developer's loopback test and is not a substitute for the
+public `AGPL_SOURCE_URL` required by a network deployment. See
+[DEPLOYMENT.md](./DEPLOYMENT.md) for the container release sequence.
+
 ## Before connecting it to Umbra
 
 1. Add a trusted product-backend proxy; never call this service from the

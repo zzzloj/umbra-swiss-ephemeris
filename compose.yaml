@@ -1,0 +1,32 @@
+services:
+  swiss-ephemeris:
+    build:
+      context: .
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SWISS_EPHEMERIS_LICENSE_MODE: ${SWISS_EPHEMERIS_LICENSE_MODE:-agpl}
+      AGPL_SOURCE_URL: ${AGPL_SOURCE_URL:?Set a public complete-corresponding-source URL before external use.}
+      SWISS_EPHEMERIS_LICENSE_REFERENCE: ${SWISS_EPHEMERIS_LICENSE_REFERENCE:-}
+      SWISS_EPHEMERIS_SERVICE_KEY: ${SWISS_EPHEMERIS_SERVICE_KEY:?Set the private service key.}
+      SWE_EPHE_PATH: /opt/sweph
+    volumes:
+      - ${SWE_EPHEMERIS_DATA_DIR:?Set the host directory containing authorised Swiss Ephemeris data.}:/opt/sweph:ro
+    ports:
+      - 127.0.0.1:${SWISS_EPHEMERIS_PORT:-8080}:8080
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2))['ready']"
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
