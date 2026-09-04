@@ -9,18 +9,25 @@ may call a deployed instance only through a server-to-server HTTP interface.
 
 It calculates tropical, geocentric ecliptic longitudes in UT for the ten
 contract planets plus the True lunar node axis. The South Node is derived as
-the exact opposition to the True North Node; it can derive five major aspects
-with a 6° orb, Placidus house cusps, and direct Ascendant/Midheaven
-coordinates when the request asks for them. It returns measurements and
-limitations only. It can also calculate a Solar Return: the instant in a
-requested year when the tropical geocentric Sun returns to the natal Sun
-longitude. A Solar Return requires an exact natal time; its houses and angles
-use the selected return location. Interpretation remains in Umbra's editorial
-layer. The same isolated service also supports the remaining named chart
-studies: synastry, horary, electional candidates, transits, secondary
-progressions, explicitly selected Solar Arc directions, and mundane event or
-seasonal ingress charts. Each calculation keeps its own source moment and
-method in the returned data.
+the exact opposition to the True North Node. It also accepts mean Lilith
+(mean lunar apogee), True Lilith (osculating lunar apogee), Chiron, and
+Proserpina h57. Proserpina h57 is an explicitly labelled hypothetical factor,
+not an astronomically confirmed planet, and requires `seorbel.txt` in the
+configured data directory. These extended factors are opt-in at the product
+boundary and can be used in every chart study, including transits, secondary
+progressions, and Solar Arc directions.
+
+The service can derive five major aspects with a 6° orb, Placidus house cusps,
+and direct Ascendant/Midheaven coordinates when the request asks for them. It
+returns measurements and limitations only. It can also calculate a Solar
+Return: the instant in a requested year when the tropical geocentric Sun
+returns to the natal Sun longitude. A Solar Return requires an exact natal
+time; its houses and angles use the selected return location. Interpretation
+remains in Umbra's editorial layer. The same isolated service also supports
+the remaining named chart studies: synastry, horary, electional candidates,
+transits, secondary progressions, explicitly selected Solar Arc directions,
+and mundane event or seasonal ingress charts. Each calculation keeps its own
+source moment and method in the returned data.
 
 ## Source availability for AGPL deployments
 
@@ -81,11 +88,14 @@ the `x-umbra-service-key` header. `POST /v1/chart-study` accepts the
 authentication requirement. `GET /healthz` is a non-sensitive readiness probe
 and does not disclose birth data. In AGPL mode, `GET /source` supplies the
 configured public source offer and never exposes configuration secrets.
+`GET /capabilities` is also non-sensitive: it discloses the supported factor
+catalogue, whether the current data mount can calculate each extended factor,
+and the Swiss Ephemeris surface not yet exposed by Umbra.
 
 ## Test a real local calculation
 
 With a Python virtual environment available and an authorised local directory
-containing `sepl_18.se1` and `semo_18.se1`, run:
+containing `sepl_18.se1`, `semo_18.se1`, `seas_18.se1`, and `seorbel.txt`, run:
 
 ```bash
 PYTHON_BIN=/path/to/python \

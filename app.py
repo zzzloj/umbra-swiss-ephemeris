@@ -46,7 +46,69 @@ BODY_CODES = {
     "neptune": swe.NEPTUNE,
     "pluto": swe.PLUTO,
     "north_node": swe.TRUE_NODE,
+    "lilith_mean": swe.MEAN_APOG,
+    "lilith_true": swe.OSCU_APOG,
+    "chiron": swe.CHIRON,
+    "proserpina": swe.PROSERPINA,
 }
+BodyId = Literal[
+    "sun",
+    "moon",
+    "mercury",
+    "venus",
+    "mars",
+    "jupiter",
+    "saturn",
+    "uranus",
+    "neptune",
+    "pluto",
+    "north_node",
+    "south_node",
+    "lilith_mean",
+    "lilith_true",
+    "chiron",
+    "proserpina",
+]
+
+# `proserpina` is calculated from the explicit Swiss Ephemeris orbital-elements
+# source. It is not a physical body and should not be represented as one.
+ORBITAL_ELEMENT_FACTORS = frozenset({"proserpina"})
+EXTENDED_FACTOR_CAPABILITIES = (
+    {
+        "id": "lilith_mean",
+        "label": "Lilith · mean lunar apogee",
+        "kind": "lunar_orbital_point",
+        "requires": "Swiss Ephemeris lunar data",
+    },
+    {
+        "id": "lilith_true",
+        "label": "Lilith · osculating lunar apogee",
+        "kind": "lunar_orbital_point",
+        "requires": "Swiss Ephemeris lunar data",
+    },
+    {
+        "id": "chiron",
+        "label": "Chiron",
+        "kind": "minor_body",
+        "requires": "Swiss Ephemeris asteroid data (seas_*.se1)",
+    },
+    {
+        "id": "proserpina",
+        "label": "Proserpina · h57",
+        "kind": "hypothetical_factor",
+        "requires": "Swiss Ephemeris orbital-elements file (seorbel.txt)",
+    },
+)
+UNIMPLEMENTED_SWISS_CAPABILITIES = (
+    "Additional asteroids: Ceres, Pallas, Juno, Vesta, Pholus, and numbered minor planets.",
+    "Fixed-star positions and star-based rises, settings, and transits.",
+    "Other lunar nodes and apsides: Mean Node, interpolated apogee, and Priapus.",
+    "Alternative house systems and additional chart points such as Vertex and Equatorial Ascendant.",
+    "Sidereal zodiac modes and declared ayanamsha choices.",
+    "Eclipses, occultations, planetary phenomena, heliacal events, and rise/set/transit times.",
+    "Equatorial, horizontal, heliocentric, topocentric, and declination coordinate products.",
+    "Planetary nodes, apsides, orbital elements, and distances.",
+)
 SIGN_NAMES = (
     "Aries",
     "Taurus",
@@ -168,20 +230,7 @@ class Birth(BaseModel):
 class ChartRequest(BaseModel):
     version: Literal["ephemeris-request-v1"]
     birth: Birth
-    bodies: list[Literal[
-        "sun",
-        "moon",
-        "mercury",
-        "venus",
-        "mars",
-        "jupiter",
-        "saturn",
-        "uranus",
-        "neptune",
-        "pluto",
-        "north_node",
-        "south_node",
-    ]] = Field(min_length=1, max_length=12)
+    bodies: list[BodyId] = Field(min_length=1, max_length=16)
     features: list[Literal["positions", "aspects", "houses", "angles"]] = Field(
         min_length=1, max_length=4
     )
@@ -253,20 +302,7 @@ class SolarReturnRequest(BaseModel):
     returnYear: int = Field(ge=1600, le=2600)
     returnLocation: Location
     returnTimeZone: str
-    bodies: list[Literal[
-        "sun",
-        "moon",
-        "mercury",
-        "venus",
-        "mars",
-        "jupiter",
-        "saturn",
-        "uranus",
-        "neptune",
-        "pluto",
-        "north_node",
-        "south_node",
-    ]] = Field(min_length=1, max_length=12)
+    bodies: list[BodyId] = Field(min_length=1, max_length=16)
     features: list[Literal["positions", "aspects", "houses", "angles"]] = Field(
         min_length=1, max_length=4
     )
@@ -339,20 +375,7 @@ class ChartStudyRequest(BaseModel):
         "mundane",
     ]
     inputs: dict[str, object]
-    bodies: list[Literal[
-        "sun",
-        "moon",
-        "mercury",
-        "venus",
-        "mars",
-        "jupiter",
-        "saturn",
-        "uranus",
-        "neptune",
-        "pluto",
-        "north_node",
-        "south_node",
-    ]] = Field(min_length=1, max_length=12)
+    bodies: list[BodyId] = Field(min_length=1, max_length=16)
     features: list[Literal["positions", "aspects", "houses", "angles"]] = Field(
         min_length=1, max_length=4
     )
@@ -576,7 +599,7 @@ def position_for(jd_ut: float, body: str) -> Position:
         BODY_CODES[body],
         swe.FLG_SWIEPH | swe.FLG_SPEED,
     )
-    if not flags & swe.FLG_SWIEPH:
+    if body not in ORBITAL_ELEMENT_FACTORS and not flags & swe.FLG_SWIEPH:
         raise ServiceError(
             503,
             "ephemeris_data_unavailable",
@@ -591,6 +614,17 @@ def position_for(jd_ut: float, body: str) -> Position:
         degreeInSign=round(longitude % 30, 6),
         retrograde=float(coordinates[3]) < 0,
     )
+
+
+def factor_is_available(current: Settings, body: str) -> bool:
+    """Probe a non-user moment for a factor's configured data dependency."""
+
+    try:
+        configure_ephemeris_data(current)
+        position_for(2451545.0, body)
+    except (ServiceError, swe.Error):
+        return False
+    return True
 
 
 def angle_for(name: Literal["ascendant", "midheaven"], longitude: float) -> ChartAngle:
@@ -994,6 +1028,52 @@ def study_inputs(request: ChartStudyRequest) -> BaseModel:
         "invalid_study_inputs",
         "The selected chart study needs a declared method and valid source facts.",
     )
+
+
+@api.get("/capabilities")
+def capabilities():
+    """Publish the calculator surface without accepting or exposing birth data."""
+
+    current = settings()
+    return {
+        "calculator": "swiss-ephemeris",
+        "implemented": {
+            "positionFactors": [
+                "sun",
+                "moon",
+                "mercury",
+                "venus",
+                "mars",
+                "jupiter",
+                "saturn",
+                "uranus",
+                "neptune",
+                "pluto",
+                "north_node",
+                "south_node",
+                "lilith_mean",
+                "lilith_true",
+                "chiron",
+                "proserpina",
+            ],
+            "chartStudies": [
+                "solar_return",
+                "synastry",
+                "horary",
+                "electional",
+                "transits",
+                "progressions",
+                "directions:solar_arc",
+                "mundane:event",
+                "mundane:ingress",
+            ],
+        },
+        "extendedFactors": [
+            {**factor, "available": factor_is_available(current, factor["id"])}
+            for factor in EXTENDED_FACTOR_CAPABILITIES
+        ],
+        "notImplemented": list(UNIMPLEMENTED_SWISS_CAPABILITIES),
+    }
 
 
 @api.get("/healthz")

@@ -142,6 +142,79 @@ class SwissEphemerisServiceTests(unittest.TestCase):
             "retrograde": True,
         })
 
+    def test_extended_factors_use_the_declared_swiss_identifiers(self):
+        with patch.object(
+            service.swe,
+            "calc_ut",
+            return_value=((25.0, 0, 0, -0.02, 0, 0), service.swe.FLG_SWIEPH, ""),
+        ) as calculated:
+            for body in ("lilith_mean", "lilith_true", "chiron"):
+                self.assertEqual(service.position_for(2451545.0, body).body, body)
+
+        self.assertEqual(
+            [call.args[1] for call in calculated.call_args_list],
+            [service.swe.MEAN_APOG, service.swe.OSCU_APOG, service.swe.CHIRON],
+        )
+
+    def test_proserpina_is_an_explicit_orbital_element_factor(self):
+        with patch.object(
+            service.swe,
+            "calc_ut",
+            return_value=((25.0, 0, 0, -0.02, 0, 0), 0, ""),
+        ) as calculated:
+            result = service.position_for(2451545.0, "proserpina")
+
+        self.assertEqual(result.body, "proserpina")
+        self.assertEqual(calculated.call_args.args[1], service.swe.PROSERPINA)
+
+    def test_extended_factors_are_accepted_by_chart_and_study_contracts(self):
+        birth = {
+            "localDate": "1992-05-30",
+            "localTime": "09:30",
+            "timeAccuracy": "exact",
+            "timeZone": "Europe/Lisbon",
+            "location": {"latitude": 38.7223, "longitude": -9.1393},
+        }
+        factors = ["lilith_mean", "lilith_true", "chiron", "proserpina"]
+        chart = service.ChartRequest(
+            version="ephemeris-request-v1",
+            birth=birth,
+            bodies=factors,
+            features=["positions"],
+        )
+        study = service.ChartStudyRequest(
+            version="chart-study-request-v1",
+            study="transits",
+            inputs={"natal": birth, "target": birth},
+            bodies=factors,
+            features=["positions"],
+        )
+
+        self.assertEqual(chart.bodies, factors)
+        self.assertEqual(study.bodies, factors)
+
+    def test_capabilities_disclose_data_requirements_and_unimplemented_swiss_surface(self):
+        configured = service.Settings(
+            service_key=None,
+            ephemeris_path=None,
+            licence_mode="agpl",
+            agpl_source_url=None,
+            professional_licence_reference=None,
+        )
+        with patch.object(service, "settings", return_value=configured), patch.object(
+            service,
+            "factor_is_available",
+            side_effect=[True, True, True, False],
+        ):
+            result = service.capabilities()
+
+        factors = {factor["id"]: factor for factor in result["extendedFactors"]}
+        self.assertTrue(factors["chiron"]["available"])
+        self.assertFalse(factors["proserpina"]["available"])
+        self.assertIn("seorbel.txt", factors["proserpina"]["requires"])
+        self.assertTrue(any("Fixed-star" in item for item in result["notImplemented"]))
+        self.assertIn("directions:solar_arc", result["implemented"]["chartStudies"])
+
     def test_solar_return_requires_an_exact_natal_birth_time(self):
         with self.assertRaises(ValueError):
             service.SolarReturnRequest(

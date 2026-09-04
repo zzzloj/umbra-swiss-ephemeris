@@ -8,7 +8,7 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 SERVICE_URL="${SWISS_EPHEMERIS_INTEGRATION_URL:-http://127.0.0.1:18080}"
-SWE_DATA_DIR="${SWE_EPHEMERIS_DATA_DIR:?Set SWE_EPHEMERIS_DATA_DIR to a directory containing sepl_18.se1 and semo_18.se1.}"
+SWE_DATA_DIR="${SWE_EPHEMERIS_DATA_DIR:?Set SWE_EPHEMERIS_DATA_DIR to a directory containing sepl_18.se1, semo_18.se1, seas_18.se1, and seorbel.txt.}"
 SERVICE_KEY="umbra-local-contract-test-key"
 LOG_FILE="${TMPDIR:-/tmp}/umbra-swiss-ephemeris-contract-test.log"
 
@@ -20,8 +20,8 @@ case "$SERVICE_URL" in
     ;;
 esac
 
-if [ ! -f "$SWE_DATA_DIR/sepl_18.se1" ] || [ ! -f "$SWE_DATA_DIR/semo_18.se1" ]; then
-  echo "Missing sepl_18.se1 or semo_18.se1 in $SWE_DATA_DIR" >&2
+if [ ! -f "$SWE_DATA_DIR/sepl_18.se1" ] || [ ! -f "$SWE_DATA_DIR/semo_18.se1" ] || [ ! -f "$SWE_DATA_DIR/seas_18.se1" ] || [ ! -f "$SWE_DATA_DIR/seorbel.txt" ]; then
+  echo "Missing sepl_18.se1, semo_18.se1, seas_18.se1, or seorbel.txt in $SWE_DATA_DIR" >&2
   exit 2
 fi
 
