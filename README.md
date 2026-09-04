@@ -8,7 +8,8 @@ not vendor this code, its Python environment, or its calculator binary: it
 may call a deployed instance only through a server-to-server HTTP interface.
 
 It calculates tropical, geocentric ecliptic longitudes in UT for the ten
-contract planets plus the True North Node; it can derive five major aspects
+contract planets plus the True lunar node axis. The South Node is derived as
+the exact opposition to the True North Node; it can derive five major aspects
 with a 6° orb, Placidus house cusps, and direct Ascendant/Midheaven
 coordinates when the request asks for them. It returns measurements and
 limitations only. Interpretation remains in Umbra's editorial layer.

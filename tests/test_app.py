@@ -126,6 +126,22 @@ class SwissEphemerisServiceTests(unittest.TestCase):
         self.assertEqual(midheaven.sign, "Capricorn")
         self.assertEqual(midheaven.degreeInSign, 17.5)
 
+    def test_south_node_is_the_exact_opposite_of_the_true_north_node(self):
+        with patch.object(
+            service.swe,
+            "calc_ut",
+            return_value=((25.0, 0, 0, -0.02, 0, 0), service.swe.FLG_SWIEPH, ""),
+        ):
+            south_node = service.position_for(2451545.0, "south_node")
+
+        self.assertEqual(south_node.model_dump(), {
+            "body": "south_node",
+            "longitudeDegrees": 205.0,
+            "sign": "Libra",
+            "degreeInSign": 25.0,
+            "retrograde": True,
+        })
+
     def test_birth_input_format_is_not_silently_broadened(self):
         with self.assertRaises(ValueError):
             service.Birth(

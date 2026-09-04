@@ -179,7 +179,8 @@ class ChartRequest(BaseModel):
         "neptune",
         "pluto",
         "north_node",
-    ]] = Field(min_length=1, max_length=11)
+        "south_node",
+    ]] = Field(min_length=1, max_length=12)
     features: list[Literal["positions", "aspects", "houses", "angles"]] = Field(
         min_length=1, max_length=4
     )
@@ -348,6 +349,17 @@ def swiss_data_is_ready(current: Settings) -> bool:
 
 
 def position_for(jd_ut: float, body: str) -> Position:
+    if body == "south_node":
+        north_node = position_for(jd_ut, "north_node")
+        longitude = (north_node.longitudeDegrees + 180) % 360
+        sign_index = int(longitude // 30)
+        return Position(
+            body="south_node",
+            longitudeDegrees=round(longitude, 6),
+            sign=SIGN_NAMES[sign_index],
+            degreeInSign=round(longitude % 30, 6),
+            retrograde=north_node.retrograde,
+        )
     coordinates, flags, _ = swe.calc_ut(
         jd_ut,
         BODY_CODES[body],
@@ -384,6 +396,8 @@ def angle_for(name: Literal["ascendant", "midheaven"], longitude: float) -> Char
 def major_aspects(positions: list[Position]) -> list[Aspect]:
     result: list[Aspect] = []
     for first, second in combinations(positions, 2):
+        if {first.body, second.body} == {"north_node", "south_node"}:
+            continue
         distance = abs(first.longitudeDegrees - second.longitudeDegrees)
         smaller_distance = min(distance, 360 - distance)
         for kind, exact_angle in ASPECTS.items():

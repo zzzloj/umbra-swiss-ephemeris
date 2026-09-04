@@ -29,7 +29,7 @@ def post_chart(key: str):
             "timeZone": "Europe/Lisbon",
             "location": {"latitude": 38.7223, "longitude": -9.1393},
         },
-        "bodies": ["sun", "moon", "mercury", "venus", "north_node"],
+        "bodies": ["sun", "moon", "mercury", "venus", "north_node", "south_node"],
         "features": ["positions", "aspects", "houses", "angles"],
         "limitations": [],
     }
@@ -68,7 +68,7 @@ class LiveServiceContractTests(unittest.TestCase):
         self.assertEqual(chart["version"], "ephemeris-response-v1")
         self.assertEqual(
             [position["body"] for position in chart["positions"]],
-            ["sun", "moon", "mercury", "venus", "north_node"],
+            ["sun", "moon", "mercury", "venus", "north_node", "south_node"],
         )
         self.assertEqual(len(chart["houses"]), 12)
         self.assertEqual(
