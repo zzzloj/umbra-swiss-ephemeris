@@ -70,6 +70,25 @@ def post_solar_return(key: str):
         return response.status, json.loads(response.read())
 
 
+def post_chart_study(key: str, study: str, inputs: dict):
+    request_body = {
+        "version": "chart-study-request-v1",
+        "study": study,
+        "inputs": inputs,
+        "bodies": ["sun", "moon", "north_node", "south_node"],
+        "features": ["positions", "aspects", "houses", "angles"],
+        "limitations": [],
+    }
+    request = Request(
+        f"{SERVICE_URL}/v1/chart-study",
+        data=json.dumps(request_body).encode(),
+        headers={"content-type": "application/json", "x-umbra-service-key": key},
+        method="POST",
+    )
+    with urlopen(request, timeout=15) as response:
+        return response.status, json.loads(response.read())
+
+
 @unittest.skipUnless(
     SERVICE_URL and SERVICE_KEY and EXPECTED_SOURCE_URL,
     "Set loopback integration environment variables to run this test.",
@@ -118,6 +137,61 @@ class LiveServiceContractTests(unittest.TestCase):
             ((solar_return["positions"][0]["longitudeDegrees"] - solar_return["natalSunLongitudeDegrees"] + 180) % 360) - 180
         )
         self.assertLess(solar_error, 0.0001)
+
+    def test_every_remaining_chart_study_uses_live_swiss_data(self):
+        natal = {
+            "localDate": "1992-05-30",
+            "localTime": "09:15",
+            "timeAccuracy": "exact",
+            "timeZone": "Europe/Lisbon",
+            "location": {"latitude": 38.7223, "longitude": -9.1393},
+        }
+        moment = {
+            "localDate": "2026-09-04",
+            "localTime": "12:00",
+            "timeAccuracy": "exact",
+            "timeZone": "Europe/Lisbon",
+            "location": {"latitude": 38.7223, "longitude": -9.1393},
+        }
+        requests = [
+            ("synastry", {"first": natal, "second": {**natal, "localDate": "1991-04-20"}}),
+            ("horary", {"moment": moment}),
+            ("electional", {"candidates": [moment, {**moment, "localTime": "13:00"}]}),
+            ("transits", {"natal": natal, "target": moment}),
+            ("progressions", {"natal": natal, "target": moment}),
+            ("directions", {"natal": natal, "target": moment, "method": "solar_arc"}),
+            ("mundane", {"method": "event", "moment": moment}),
+            (
+                "mundane",
+                {
+                    "method": "ingress",
+                    "year": 2026,
+                    "ingress": "aries",
+                    "location": natal["location"],
+                    "timeZone": "Europe/Lisbon",
+                },
+            ),
+        ]
+
+        for study, inputs in requests:
+            with self.subTest(study=study, method=inputs.get("method")):
+                status, result = post_chart_study(SERVICE_KEY, study, inputs)
+                self.assertEqual(status, 200)
+                self.assertEqual(result["version"], "chart-study-response-v1")
+                self.assertGreaterEqual(len(result["charts"]), 1)
+                self.assertEqual(
+                    [position["body"] for position in result["charts"][0]["positions"]],
+                    ["sun", "moon", "north_node", "south_node"],
+                )
+                self.assertEqual(len(result["charts"][0]["houses"]), 12)
+
+        direction_status, direction = post_chart_study(
+            SERVICE_KEY,
+            "directions",
+            {"natal": natal, "target": moment, "method": "solar_arc"},
+        )
+        self.assertEqual(direction_status, 200)
+        self.assertIsInstance(direction["directionArcDegrees"], float)
 
 
 if __name__ == "__main__":

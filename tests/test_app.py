@@ -176,6 +176,80 @@ class SwissEphemerisServiceTests(unittest.TestCase):
         self.assertAlmostEqual(elapsed_seconds, days_per_year * 86_400, delta=2)
         self.assertEqual(longitude, 210)
 
+    def test_every_remaining_study_uses_a_distinct_validated_input_shape(self):
+        natal = {
+            "localDate": "1992-05-30",
+            "localTime": "09:30",
+            "timeAccuracy": "exact",
+            "timeZone": "Europe/Lisbon",
+            "location": {"latitude": 38.7223, "longitude": -9.1393},
+        }
+        moment = {
+            "localDate": "2026-09-04",
+            "localTime": "12:00",
+            "timeAccuracy": "exact",
+            "timeZone": "Europe/Lisbon",
+            "location": {"latitude": 38.7223, "longitude": -9.1393},
+        }
+        inputs_by_study = {
+            "synastry": {"first": natal, "second": natal},
+            "horary": {"moment": moment},
+            "electional": {"candidates": [moment, {**moment, "localTime": "13:00"}]},
+            "transits": {"natal": natal, "target": moment},
+            "progressions": {"natal": natal, "target": moment},
+            "directions": {"natal": natal, "target": moment, "method": "solar_arc"},
+            "mundane": {"method": "event", "moment": moment},
+        }
+        for study, inputs in inputs_by_study.items():
+            request = service.ChartStudyRequest(
+                version="chart-study-request-v1",
+                study=study,
+                inputs=inputs,
+                bodies=["sun", "moon"],
+                features=["positions", "aspects"],
+            )
+            self.assertIsNotNone(service.study_inputs(request))
+
+    def test_directions_require_an_explicit_solar_arc_method_and_exact_natal_time(self):
+        with self.assertRaises(ValueError):
+            service.DirectionInputs(
+                natal={
+                    "localDate": "1992-05-30",
+                    "localTime": "09:30",
+                    "timeAccuracy": "approximate",
+                    "timeZone": "Europe/Lisbon",
+                    "location": {"latitude": 38.7223, "longitude": -9.1393},
+                },
+                target={
+                    "localDate": "2026-09-04",
+                    "localTime": "12:00",
+                    "timeAccuracy": "exact",
+                    "timeZone": "Europe/Lisbon",
+                    "location": {"latitude": 38.7223, "longitude": -9.1393},
+                },
+                method="primary",
+            )
+
+    def test_solar_arc_rotates_positions_and_houses_by_the_same_amount(self):
+        position = service.Position(
+            body="sun",
+            longitudeDegrees=350,
+            sign="Pisces",
+            degreeInSign=20,
+            retrograde=False,
+        )
+        directed = service.rotated_position(position, 20)
+        houses, angles = service.rotate_geometry(
+            [service.HouseCusp(number=1, longitudeDegrees=350)],
+            [service.angle_for("ascendant", 350), service.angle_for("midheaven", 80)],
+            20,
+        )
+
+        self.assertEqual(directed.longitudeDegrees, 10)
+        self.assertEqual(directed.sign, "Aries")
+        self.assertEqual(houses[0].longitudeDegrees, 10)
+        self.assertEqual(angles[0].longitudeDegrees, 10)
+
     def test_birth_input_format_is_not_silently_broadened(self):
         with self.assertRaises(ValueError):
             service.Birth(

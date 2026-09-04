@@ -16,7 +16,11 @@ limitations only. It can also calculate a Solar Return: the instant in a
 requested year when the tropical geocentric Sun returns to the natal Sun
 longitude. A Solar Return requires an exact natal time; its houses and angles
 use the selected return location. Interpretation remains in Umbra's editorial
-layer.
+layer. The same isolated service also supports the remaining named chart
+studies: synastry, horary, electional candidates, transits, secondary
+progressions, explicitly selected Solar Arc directions, and mundane event or
+seasonal ingress charts. Each calculation keeps its own source moment and
+method in the returned data.
 
 ## Source availability for AGPL deployments
 
@@ -29,7 +33,7 @@ instructions, dependency pins, notices, and the exact running changes. Set
 `AGPL_SOURCE_URL` to a durable public URL for that complete corresponding
 source (preferably an immutable release or commit). `GET /source` returns that
 URL without requiring the service key. Until it is configured, `/v1/chart`
-and `/v1/solar-return` refuse calculations.
+`/v1/solar-return`, and `/v1/chart-study` refuse calculations.
 
 The complete public source project is hosted at
 [`github.com/zzzloj/umbra-swiss-ephemeris`](https://github.com/zzzloj/umbra-swiss-ephemeris).
@@ -72,9 +76,11 @@ uvicorn app:api --host 127.0.0.1 --port 8080
 
 The service accepts `POST /v1/chart` with the `ephemeris-request-v1` body and
 `POST /v1/solar-return` with the `solar-return-request-v1` body; both require
-the `x-umbra-service-key` header. `GET /healthz` is a non-sensitive readiness
-probe and does not disclose birth data. In AGPL mode, `GET /source` supplies
-the configured public source offer and never exposes configuration secrets.
+the `x-umbra-service-key` header. `POST /v1/chart-study` accepts the
+`chart-study-request-v1` body for the named non-natal methods and has the same
+authentication requirement. `GET /healthz` is a non-sensitive readiness probe
+and does not disclose birth data. In AGPL mode, `GET /source` supplies the
+configured public source offer and never exposes configuration secrets.
 
 ## Test a real local calculation
 
@@ -89,7 +95,8 @@ scripts/run-local-contract-test.sh
 
 This brings up the service on `127.0.0.1:18080`, verifies its source offer,
 authentication, four actual Swiss-data positions, aspects, Placidus houses,
-and a real Solar Return recurrence, then shuts it down. Its `file://` source offer is deliberately
+one real Solar Return recurrence, and every named non-natal chart study, then
+shuts it down. Its `file://` source offer is deliberately
 restricted to a developer's loopback test and is not a substitute for the
 public `AGPL_SOURCE_URL` required by a network deployment. See
 [DEPLOYMENT.md](./DEPLOYMENT.md) for the container release sequence.
