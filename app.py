@@ -9,11 +9,12 @@ astronomical data only and must be reached through a trusted backend.
 from __future__ import annotations
 
 import hmac
+import math
 import os
 import re
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
@@ -28,7 +29,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 api = FastAPI(
     title="Umbra Swiss Ephemeris service",
-    version="1.0.0-draft",
+    version="1.1.0-draft",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -105,8 +106,8 @@ UNIMPLEMENTED_SWISS_CAPABILITIES = (
     "Other lunar nodes and apsides: Mean Node, interpolated apogee, and Priapus.",
     "Alternative house systems and additional chart points such as Vertex and Equatorial Ascendant.",
     "Sidereal zodiac modes and declared ayanamsha choices.",
-    "Eclipses, occultations, planetary phenomena, heliacal events, and rise/set/transit times.",
-    "Equatorial, horizontal, heliocentric, topocentric, and declination coordinate products.",
+    "Occultations, planetary phenomena, heliacal events, and rise/set/transit times.",
+    "Horizontal, heliocentric, topocentric, and declination coordinate products beyond astrocartography line inputs.",
     "Planetary nodes, apsides, orbital elements, and distances.",
 )
 SIGN_NAMES = (
@@ -367,6 +368,10 @@ class ChartStudyRequest(BaseModel):
     version: Literal["chart-study-request-v1"]
     study: Literal[
         "synastry",
+        "composite",
+        "coalescent",
+        "davison",
+        "multichart",
         "horary",
         "electional",
         "transits",
@@ -397,6 +402,98 @@ class ChartStudyRequest(BaseModel):
 class SynastryInputs(BaseModel):
     first: Birth
     second: Birth
+
+
+class CompositeInputs(BaseModel):
+    """Two natal records for a shortest-arc midpoint composite."""
+
+    first: Birth
+    second: Birth
+    oppositionPolicy: Literal["omit", "first", "second"] = "omit"
+
+
+class CoalescentInputs(BaseModel):
+    """A deliberately named, non-standard harmonic-sum construction.
+
+    Coalescent has no single accepted calculation standard. Requiring the
+    method field ensures an interface cannot market a convenient midpoint as a
+    different traditional technique.
+    """
+
+    first: Birth
+    second: Birth
+    method: Literal["harmonic_sum"]
+
+
+class DavisonInputs(BaseModel):
+    """A time-space midpoint relationship chart, commonly called Davison."""
+
+    first: Birth
+    second: Birth
+
+    @model_validator(mode="after")
+    def davison_requires_exact_source_times(self) -> "DavisonInputs":
+        if self.first.timeAccuracy != "exact" or self.second.timeAccuracy != "exact":
+            raise ValueError("Davison requires an exact recorded time for both natal inputs")
+        return self
+
+
+class MultiChartParticipant(BaseModel):
+    id: str = Field(min_length=1, max_length=48, pattern=r"^[a-zA-Z0-9_-]+$")
+    natal: Birth
+
+
+class MultiChartLayer(BaseModel):
+    """One explicitly declared layer, reused for each named participant."""
+
+    kind: Literal["natal", "transits", "progressions", "directions", "solar_return"]
+    target: Optional[Moment] = None
+    method: Optional[Literal["solar_arc"]] = None
+    returnYear: Optional[int] = Field(default=None, ge=1600, le=2600)
+    returnLocation: Optional[Location] = None
+    returnTimeZone: Optional[str] = None
+
+    @field_validator("returnTimeZone")
+    @classmethod
+    def valid_return_timezone(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("returnTimeZone must be a valid IANA timezone") from error
+        return value
+
+    @model_validator(mode="after")
+    def layer_has_its_own_source_facts(self) -> "MultiChartLayer":
+        if self.kind in {"transits", "progressions", "directions"} and self.target is None:
+            raise ValueError(f"{self.kind} layer requires an exact target moment")
+        if self.kind == "directions" and self.method != "solar_arc":
+            raise ValueError("directions layer requires method solar_arc")
+        if self.kind == "solar_return" and (
+            self.returnYear is None
+            or self.returnLocation is None
+            or self.returnTimeZone is None
+        ):
+            raise ValueError(
+                "solar_return layer requires returnYear, returnLocation, and returnTimeZone"
+            )
+        return self
+
+
+class MultiChartInputs(BaseModel):
+    participants: list[MultiChartParticipant] = Field(min_length=1, max_length=6)
+    layers: list[MultiChartLayer] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def participants_and_layers_are_distinct(self) -> "MultiChartInputs":
+        participant_ids = [participant.id for participant in self.participants]
+        layer_ids = [layer.kind for layer in self.layers]
+        if len(set(participant_ids)) != len(participant_ids):
+            raise ValueError("multichart participant ids must be unique")
+        if len(set(layer_ids)) != len(layer_ids):
+            raise ValueError("multichart layers must not repeat a kind")
+        return self
 
 
 class MomentInputs(BaseModel):
@@ -462,6 +559,32 @@ class StudyChart(BaseModel):
     limitations: list[str]
 
 
+class DerivedPosition(BaseModel):
+    """A synthetic longitude has no meaningful instantaneous retrograde flag."""
+
+    body: str
+    longitudeDegrees: float = Field(ge=0, lt=360)
+    sign: str
+    degreeInSign: float = Field(ge=0, lt=30)
+
+
+class MidpointAmbiguity(BaseModel):
+    body: str
+    firstLongitudeDegrees: float = Field(ge=0, lt=360)
+    secondLongitudeDegrees: float = Field(ge=0, lt=360)
+
+
+class DerivedChart(BaseModel):
+    """A constructed set of longitudes, intentionally not presented as an event chart."""
+
+    id: str
+    construction: Literal["midpoint_composite", "harmonic_sum_coalescent"]
+    positions: list[DerivedPosition]
+    aspects: Optional[list[Aspect]] = None
+    midpointAmbiguities: list[MidpointAmbiguity] = Field(default_factory=list)
+    limitations: list[str]
+
+
 class CrossAspect(BaseModel):
     firstBody: str
     secondBody: str
@@ -475,8 +598,90 @@ class ChartStudyResponse(BaseModel):
     calculatedAt: str
     request: ChartStudyRequest
     charts: list[StudyChart]
+    derivedCharts: Optional[list[DerivedChart]] = None
     crossAspects: Optional[list[CrossAspect]] = None
     directionArcDegrees: Optional[float] = None
+    limitations: list[str]
+
+
+class AstrocartographyRequest(BaseModel):
+    version: Literal["astrocartography-request-v1"]
+    moment: Moment
+    bodies: list[BodyId] = Field(min_length=1, max_length=16)
+    angles: list[Literal["mc", "ic", "asc", "dsc"]] = Field(
+        min_length=1, max_length=4
+    )
+    latitudeStepDegrees: int = Field(default=2, ge=1, le=10)
+    limitations: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def astrocartography_request_is_finite(self) -> "AstrocartographyRequest":
+        if len(set(self.bodies)) != len(self.bodies):
+            raise ValueError("bodies must not contain duplicates")
+        if len(set(self.angles)) != len(self.angles):
+            raise ValueError("angles must not contain duplicates")
+        if any(len(value) > 500 for value in self.limitations):
+            raise ValueError("each limitation must be 500 characters or shorter")
+        return self
+
+
+class AstrocartographyPoint(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class AstrocartographyLine(BaseModel):
+    body: str
+    angle: Literal["mc", "ic", "asc", "dsc"]
+    points: list[AstrocartographyPoint] = Field(min_length=1)
+
+
+class AstrocartographyResponse(BaseModel):
+    version: Literal["astrocartography-response-v1"] = "astrocartography-response-v1"
+    calculatedAt: str
+    request: AstrocartographyRequest
+    lines: list[AstrocartographyLine]
+    limitations: list[str]
+
+
+class EclipseSearchRequest(BaseModel):
+    version: Literal["eclipse-search-request-v1"]
+    start: Moment
+    kinds: list[Literal["solar", "lunar"]] = Field(min_length=1, max_length=2)
+    count: int = Field(default=6, ge=1, le=12)
+    observer: Optional[Location] = None
+    limitations: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def eclipse_search_is_finite(self) -> "EclipseSearchRequest":
+        if len(set(self.kinds)) != len(self.kinds):
+            raise ValueError("kinds must not contain duplicates")
+        if any(len(value) > 500 for value in self.limitations):
+            raise ValueError("each limitation must be 500 characters or shorter")
+        return self
+
+
+class EclipseObserverVisibility(BaseModel):
+    visible: bool
+    maximumVisible: bool
+    magnitude: Optional[float] = None
+    sarosSeries: Optional[int] = None
+    sarosMember: Optional[int] = None
+
+
+class EclipseEvent(BaseModel):
+    kind: Literal["solar", "lunar"]
+    classification: Literal["total", "annular", "partial", "hybrid", "penumbral"]
+    maximumInstant: str
+    contacts: dict[str, str]
+    observerVisibility: Optional[EclipseObserverVisibility] = None
+
+
+class EclipseSearchResponse(BaseModel):
+    version: Literal["eclipse-search-response-v1"] = "eclipse-search-response-v1"
+    calculatedAt: str
+    request: EclipseSearchRequest
+    eclipses: list[EclipseEvent]
     limitations: list[str]
 
 
@@ -919,6 +1124,131 @@ def cross_aspects(
     return result
 
 
+def derived_position(body: str, longitude: float) -> DerivedPosition:
+    normalized = float(longitude) % 360
+    sign_index = int(normalized // 30)
+    return DerivedPosition(
+        body=body,
+        longitudeDegrees=round(normalized, 6),
+        sign=SIGN_NAMES[sign_index],
+        degreeInSign=round(normalized % 30, 6),
+    )
+
+
+def derived_aspects(positions: list[DerivedPosition]) -> list[Aspect]:
+    """Use the declared aspect geometry without fabricating a motion flag."""
+
+    return major_aspects(
+        [
+            Position(
+                body=position.body,
+                longitudeDegrees=position.longitudeDegrees,
+                sign=position.sign,
+                degreeInSign=position.degreeInSign,
+                retrograde=False,
+            )
+            for position in positions
+        ]
+    )
+
+
+def midpoint_longitude(
+    first: float,
+    second: float,
+    opposition_policy: Literal["omit", "first", "second"],
+) -> Optional[float]:
+    """Calculate a shortest-arc midpoint while exposing a 180° ambiguity.
+
+    A pair separated by exactly 180° has two equally short paths. The caller
+    has to disclose whether it omits that synthetic factor or chooses a stated
+    source-side convention.
+    """
+
+    shortest = (second - first + 180) % 360 - 180
+    if math.isclose(abs(shortest), 180, abs_tol=1e-8):
+        if opposition_policy == "omit":
+            return None
+        return first if opposition_policy == "first" else second
+    return (first + shortest / 2) % 360
+
+
+def midpoint_composite(
+    first: list[Position],
+    second: list[Position],
+    opposition_policy: Literal["omit", "first", "second"],
+) -> tuple[list[DerivedPosition], list[MidpointAmbiguity]]:
+    positions: list[DerivedPosition] = []
+    ambiguities: list[MidpointAmbiguity] = []
+    second_by_body = {position.body: position for position in second}
+    for first_position in first:
+        second_position = second_by_body[first_position.body]
+        longitude = midpoint_longitude(
+            first_position.longitudeDegrees,
+            second_position.longitudeDegrees,
+            opposition_policy,
+        )
+        if longitude is None:
+            ambiguities.append(
+                MidpointAmbiguity(
+                    body=first_position.body,
+                    firstLongitudeDegrees=first_position.longitudeDegrees,
+                    secondLongitudeDegrees=second_position.longitudeDegrees,
+                )
+            )
+            continue
+        positions.append(derived_position(first_position.body, longitude))
+    return positions, ambiguities
+
+
+def harmonic_sum_coalescent(
+    first: list[Position], second: list[Position]
+) -> list[DerivedPosition]:
+    """Return an explicitly labelled harmonic-sum coalescent variant only."""
+
+    second_by_body = {position.body: position for position in second}
+    return [
+        derived_position(
+            first_position.body,
+            first_position.longitudeDegrees
+            + second_by_body[first_position.body].longitudeDegrees,
+        )
+        for first_position in first
+    ]
+
+
+def shortest_arc_geographic_midpoint(first: float, second: float) -> float:
+    """Geographic longitude midpoint with the same exposed antipode guard."""
+
+    midpoint = midpoint_longitude(first % 360, second % 360, "omit")
+    if midpoint is None:
+        raise ServiceError(
+            422,
+            "davison_longitude_ambiguous",
+            "Davison cannot infer one geographic midpoint from exactly opposite longitudes.",
+        )
+    return midpoint - 360 if midpoint > 180 else midpoint
+
+
+def davison_midpoint_context(inputs: DavisonInputs) -> tuple[datetime, Location]:
+    first_instant, first_is_date_level = utc_birth_instant(inputs.first)
+    second_instant, second_is_date_level = utc_birth_instant(inputs.second)
+    if first_is_date_level or second_is_date_level:
+        raise ServiceError(
+            422,
+            "davison_requires_exact_times",
+            "Davison requires an exact recorded time for both natal inputs.",
+        )
+    instant = first_instant + (second_instant - first_instant) / 2
+    location = Location(
+        latitude=(inputs.first.location.latitude + inputs.second.location.latitude) / 2,
+        longitude=shortest_arc_geographic_midpoint(
+            inputs.first.location.longitude, inputs.second.location.longitude
+        ),
+        label="Geographic midpoint of the two declared natal locations",
+    )
+    return instant, location
+
+
 def secondary_progressed_instant(natal: datetime, target: datetime) -> datetime:
     elapsed_days = (target - natal).total_seconds() / 86_400
     if elapsed_days < 0:
@@ -997,10 +1327,355 @@ def ingress_instant(year: int, ingress: str) -> datetime:
     return utc_datetime_from_jd((lower_jd + upper_jd) / 2)
 
 
+def equatorial_coordinates(jd_ut: float, body: str) -> tuple[float, float]:
+    """Return apparent right ascension and declination in degrees."""
+
+    if body == "south_node":
+        north_ra, north_declination = equatorial_coordinates(jd_ut, "north_node")
+        return (north_ra + 180) % 360, -north_declination
+    coordinates, flags, _ = swe.calc_ut(
+        jd_ut,
+        BODY_CODES[body],
+        swe.FLG_SWIEPH | swe.FLG_EQUATORIAL,
+    )
+    if body not in ORBITAL_ELEMENT_FACTORS and not flags & swe.FLG_SWIEPH:
+        raise ServiceError(
+            503,
+            "ephemeris_data_unavailable",
+            "Swiss Ephemeris data could not be used for this calculation.",
+        )
+    return float(coordinates[0]) % 360, float(coordinates[1])
+
+
+def geographic_longitude(value: float) -> float:
+    normalized = (value + 180) % 360 - 180
+    return round(normalized, 6)
+
+
+def astrocartography_lines(
+    instant: datetime,
+    bodies: list[str],
+    angles: list[str],
+    latitude_step: int,
+) -> list[AstrocartographyLine]:
+    """Sample geographic angular lines from Swiss equatorial coordinates.
+
+    MC/IC are meridians of right ascension. ASC/DSC are sampled from the
+    spherical horizon equation. The response is map-ready geometry, not an
+    interpretation or a location recommendation.
+    """
+
+    jd_ut = julian_day(instant)
+    greenwich_sidereal_degrees = swe.sidtime(jd_ut) * 15
+    latitudes = list(range(-80, 81, latitude_step))
+    if latitudes[-1] != 80:
+        latitudes.append(80)
+    lines: list[AstrocartographyLine] = []
+    for body in bodies:
+        right_ascension, declination = equatorial_coordinates(jd_ut, body)
+        declination_radians = math.radians(declination)
+        for angle in angles:
+            if angle == "mc":
+                longitude = geographic_longitude(right_ascension - greenwich_sidereal_degrees)
+                points = [
+                    AstrocartographyPoint(latitude=latitude, longitude=longitude)
+                    for latitude in latitudes
+                ]
+            elif angle == "ic":
+                longitude = geographic_longitude(
+                    right_ascension + 180 - greenwich_sidereal_degrees
+                )
+                points = [
+                    AstrocartographyPoint(latitude=latitude, longitude=longitude)
+                    for latitude in latitudes
+                ]
+            else:
+                points = []
+                for latitude in latitudes:
+                    ratio = -math.tan(math.radians(latitude)) * math.tan(
+                        declination_radians
+                    )
+                    if ratio < -1 or ratio > 1:
+                        continue
+                    hour_angle = math.degrees(math.acos(ratio))
+                    local_sidereal = (
+                        right_ascension - hour_angle
+                        if angle == "asc"
+                        else right_ascension + hour_angle
+                    )
+                    points.append(
+                        AstrocartographyPoint(
+                            latitude=latitude,
+                            longitude=geographic_longitude(
+                                local_sidereal - greenwich_sidereal_degrees
+                            ),
+                        )
+                    )
+            if points:
+                lines.append(AstrocartographyLine(body=body, angle=angle, points=points))
+    return lines
+
+
+def eclipse_classification(kind: str, flags: int) -> str:
+    if flags & swe.ECL_ANNULAR_TOTAL:
+        return "hybrid"
+    if kind == "solar" and flags & swe.ECL_ANNULAR:
+        return "annular"
+    if flags & swe.ECL_TOTAL:
+        return "total"
+    if kind == "lunar" and flags & swe.ECL_PENUMBRAL:
+        return "penumbral"
+    return "partial"
+
+
+def eclipse_contacts(kind: str, values: tuple[float, ...]) -> dict[str, str]:
+    labels = (
+        ("partialBegins", 2),
+        ("partialEnds", 3),
+        ("totalityBegins", 4),
+        ("totalityEnds", 5),
+    )
+    if kind == "lunar":
+        labels += (("penumbraBegins", 6), ("penumbraEnds", 7))
+    result: dict[str, str] = {}
+    for label, index in labels:
+        if index < len(values) and values[index] > 0:
+            result[label] = utc_datetime_from_jd(values[index]).isoformat().replace(
+                "+00:00", "Z"
+            )
+    return result
+
+
+def eclipse_observer_visibility(
+    kind: str, jd_ut: float, observer: Location
+) -> EclipseObserverVisibility:
+    geoposition = (observer.longitude, observer.latitude, 0.0)
+    if kind == "solar":
+        flags, attributes = swe.sol_eclipse_how(jd_ut, geoposition, swe.FLG_SWIEPH)
+    else:
+        flags, attributes = swe.lun_eclipse_how(jd_ut, geoposition, swe.FLG_SWIEPH)
+    magnitude = float(attributes[8]) if len(attributes) > 8 and attributes[8] >= 0 else None
+    series = int(attributes[9]) if len(attributes) > 9 and attributes[9] >= 0 else None
+    member = int(attributes[10]) if len(attributes) > 10 and attributes[10] >= 0 else None
+    above_horizon = bool(flags) and len(attributes) > 6 and attributes[6] > 0
+    return EclipseObserverVisibility(
+        visible=above_horizon,
+        maximumVisible=above_horizon,
+        magnitude=round(magnitude, 6) if magnitude is not None else None,
+        sarosSeries=series,
+        sarosMember=member,
+    )
+
+
+def next_eclipse(kind: str, start_jd: float) -> tuple[int, tuple[float, ...]]:
+    if kind == "solar":
+        return swe.sol_eclipse_when_glob(start_jd, swe.FLG_SWIEPH)
+    return swe.lun_eclipse_when(start_jd, swe.FLG_SWIEPH)
+
+
+def eclipse_events(request: EclipseSearchRequest) -> list[EclipseEvent]:
+    start = study_moment_instant(request.start)
+    next_jd_by_kind = {kind: julian_day(start) for kind in request.kinds}
+    events: list[EclipseEvent] = []
+    while len(events) < request.count:
+        candidates: list[tuple[str, int, tuple[float, ...]]] = []
+        for kind, start_jd in next_jd_by_kind.items():
+            flags, times = next_eclipse(kind, start_jd)
+            candidates.append((kind, flags, times))
+        kind, flags, times = min(candidates, key=lambda candidate: candidate[2][0])
+        maximum_jd = times[0]
+        events.append(
+            EclipseEvent(
+                kind=kind,
+                classification=eclipse_classification(kind, flags),
+                maximumInstant=utc_datetime_from_jd(maximum_jd)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                contacts=eclipse_contacts(kind, times),
+                observerVisibility=(
+                    eclipse_observer_visibility(kind, maximum_jd, request.observer)
+                    if request.observer
+                    else None
+                ),
+            )
+        )
+        next_jd_by_kind[kind] = maximum_jd + 1
+    return events
+
+
+def multichart_charts(
+    inputs: MultiChartInputs,
+    bodies: list[str],
+    features: list[str],
+    base_limits: list[str],
+) -> list[StudyChart]:
+    """Build separately labelled layers; never merge people into a pseudo-chart."""
+
+    charts: list[StudyChart] = []
+    for participant in inputs.participants:
+        for layer in inputs.layers:
+            layer_id = f"{participant.id}:{layer.kind}"
+            layer_limits = base_limits + [
+                f"Multichart layer belongs to participant '{participant.id}' and remains separate from every other participant and layer."
+            ]
+            if layer.kind == "natal":
+                charts.append(
+                    chart_from_birth(
+                        layer_id,
+                        participant.natal,
+                        bodies,
+                        features,
+                        layer_limits,
+                    )
+                )
+                continue
+
+            if layer.kind == "transits":
+                assert layer.target is not None
+                target_instant = study_moment_instant(layer.target)
+                charts.append(
+                    chart_at_instant(
+                        layer_id,
+                        target_instant,
+                        layer.target.location,
+                        layer.target.timeZone,
+                        bodies,
+                        features,
+                        layer_limits
+                        + [
+                            f"Transit layer is keyed to '{participant.id}:natal'; compare it only with that participant's natal record."
+                        ],
+                    )
+                )
+                continue
+
+            if layer.kind == "progressions":
+                assert layer.target is not None
+                natal_instant, is_date_level = utc_birth_instant(participant.natal)
+                target_instant = study_moment_instant(layer.target)
+                effective_features = (
+                    [
+                        feature
+                        for feature in features
+                        if feature not in {"houses", "angles"}
+                    ]
+                    if is_date_level
+                    else features
+                )
+                charts.append(
+                    chart_at_instant(
+                        layer_id,
+                        secondary_progressed_instant(natal_instant, target_instant),
+                        participant.natal.location,
+                        participant.natal.timeZone,
+                        bodies,
+                        effective_features,
+                        layer_limits
+                        + [
+                            "Secondary progressions apply one mean solar day after birth for each tropical year elapsed to the target moment."
+                        ],
+                    )
+                )
+                continue
+
+            if layer.kind == "directions":
+                assert layer.target is not None
+                if participant.natal.timeAccuracy != "exact":
+                    raise ServiceError(
+                        422,
+                        "directions_require_exact_natal_time",
+                        "Solar Arc layers require an exact natal time for every included participant.",
+                    )
+                natal_chart = chart_from_birth(
+                    f"{participant.id}:natal_source",
+                    participant.natal,
+                    bodies,
+                    features,
+                    layer_limits,
+                )
+                natal_instant, _ = utc_birth_instant(participant.natal)
+                target_instant = study_moment_instant(layer.target)
+                arc_degrees = (
+                    solar_longitude(
+                        julian_day(secondary_progressed_instant(natal_instant, target_instant))
+                    )
+                    - solar_longitude(julian_day(natal_instant))
+                ) % 360
+                directed_houses, directed_angles = rotate_geometry(
+                    natal_chart.houses, natal_chart.angles, arc_degrees
+                )
+                directed_positions = [
+                    rotated_position(position, arc_degrees)
+                    for position in natal_chart.positions
+                ]
+                charts.append(
+                    StudyChart(
+                        id=layer_id,
+                        instant=target_instant.isoformat().replace("+00:00", "Z"),
+                        localDateTime=target_instant.astimezone(
+                            ZoneInfo(layer.target.timeZone)
+                        ).isoformat(),
+                        positions=directed_positions,
+                        aspects=major_aspects(directed_positions)
+                        if "aspects" in features
+                        else None,
+                        houses=directed_houses,
+                        angles=directed_angles,
+                        limitations=list(
+                            dict.fromkeys(
+                                layer_limits
+                                + [
+                                    f"Solar Arc layer uses an arc of {round(arc_degrees, 6)}° applied to participant '{participant.id}'."
+                                ]
+                            )
+                        ),
+                    )
+                )
+                continue
+
+            assert layer.kind == "solar_return"
+            assert layer.returnYear is not None
+            assert layer.returnLocation is not None
+            assert layer.returnTimeZone is not None
+            if participant.natal.timeAccuracy != "exact":
+                raise ServiceError(
+                    422,
+                    "solar_return_requires_exact_natal_time",
+                    "Solar Return layers require an exact natal time for every included participant.",
+                )
+            natal_instant, _ = utc_birth_instant(participant.natal)
+            return_instant, natal_sun = solar_return_instant(
+                natal_instant, layer.returnYear
+            )
+            charts.append(
+                chart_at_instant(
+                    layer_id,
+                    return_instant,
+                    layer.returnLocation,
+                    layer.returnTimeZone,
+                    bodies,
+                    features,
+                    layer_limits
+                    + [
+                        f"Solar Return layer repeats participant '{participant.id}' natal solar longitude {round(natal_sun, 6)}° at the selected return location."
+                    ],
+                )
+            )
+    return charts
+
+
 def study_inputs(request: ChartStudyRequest) -> BaseModel:
     try:
         if request.study == "synastry":
             return SynastryInputs.model_validate(request.inputs)
+        if request.study == "composite":
+            return CompositeInputs.model_validate(request.inputs)
+        if request.study == "coalescent":
+            return CoalescentInputs.model_validate(request.inputs)
+        if request.study == "davison":
+            return DavisonInputs.model_validate(request.inputs)
+        if request.study == "multichart":
+            return MultiChartInputs.model_validate(request.inputs)
         if request.study == "horary":
             return MomentInputs.model_validate(request.inputs)
         if request.study == "electional":
@@ -1059,6 +1734,10 @@ def capabilities():
             "chartStudies": [
                 "solar_return",
                 "synastry",
+                "composite:shortest_arc_midpoints",
+                "coalescent:harmonic_sum",
+                "davison:time_space_midpoint",
+                "multichart:natal+transits+progressions+directions+solar_return",
                 "horary",
                 "electional",
                 "transits",
@@ -1066,6 +1745,8 @@ def capabilities():
                 "directions:solar_arc",
                 "mundane:event",
                 "mundane:ingress",
+                "astrocartography:mc+ic+asc+dsc",
+                "eclipse_search:global+observer_visibility",
             ],
         },
         "extendedFactors": [
@@ -1105,6 +1786,83 @@ def source_offer():
             "AGPL source availability has not been configured.",
         )
     return {"license": "AGPL-3.0-only", "sourceUrl": current.agpl_source_url}
+
+
+@api.post("/v1/astrocartography", response_model=AstrocartographyResponse)
+def calculate_astrocartography(
+    request: AstrocartographyRequest,
+    current: Settings = Depends(authenticate),
+) -> AstrocartographyResponse:
+    """Return map geometry for angular planetary lines at one exact moment."""
+
+    configure_ephemeris_data(current)
+    try:
+        instant = study_moment_instant(request.moment)
+        lines = astrocartography_lines(
+            instant,
+            request.bodies,
+            request.angles,
+            request.latitudeStepDegrees,
+        )
+    except ServiceError:
+        raise
+    except swe.Error as error:
+        raise ServiceError(
+            502,
+            "swiss_ephemeris_error",
+            "Swiss Ephemeris could not complete this astrocartography calculation.",
+        ) from error
+    limitations = list(
+        dict.fromkeys(
+            request.limitations
+            + [
+                "Astrocartography lines are sampled angular geometry from the declared exact moment, not place recommendations.",
+                "MC and IC are right-ascension meridians; ASC and DSC use sampled horizon intersections at each returned latitude.",
+                f"ASC and DSC line geometry is sampled every {request.latitudeStepDegrees}° of latitude and may have polar gaps.",
+            ]
+        )
+    )
+    return AstrocartographyResponse(
+        calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        request=request,
+        lines=lines,
+        limitations=limitations,
+    )
+
+
+@api.post("/v1/eclipses", response_model=EclipseSearchResponse)
+def search_eclipses(
+    request: EclipseSearchRequest,
+    current: Settings = Depends(authenticate),
+) -> EclipseSearchResponse:
+    """Find chronologically next global eclipses, with optional observer geometry."""
+
+    configure_ephemeris_data(current)
+    try:
+        events = eclipse_events(request)
+    except ServiceError:
+        raise
+    except swe.Error as error:
+        raise ServiceError(
+            502,
+            "swiss_ephemeris_error",
+            "Swiss Ephemeris could not complete this eclipse search.",
+        ) from error
+    limitations = list(
+        dict.fromkeys(
+            request.limitations
+            + [
+                "Eclipse events are astronomical timings in UTC. This service does not assign personal meaning or predict outcomes.",
+                "Observer visibility, when requested, is evaluated at the event maximum for the declared location; it is not a full local circumstances report.",
+            ]
+        )
+    )
+    return EclipseSearchResponse(
+        calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        request=request,
+        eclipses=events,
+        limitations=limitations,
+    )
 
 
 @api.post("/v1/chart", response_model=ChartResponse)
@@ -1211,6 +1969,117 @@ def calculate_chart_study(
     inputs = study_inputs(request)
     base_limits = list(request.limitations)
     try:
+        if isinstance(inputs, CompositeInputs):
+            first = chart_from_birth(
+                "first_natal", inputs.first, request.bodies, request.features, base_limits
+            )
+            second = chart_from_birth(
+                "second_natal", inputs.second, request.bodies, request.features, base_limits
+            )
+            positions, ambiguities = midpoint_composite(
+                first.positions, second.positions, inputs.oppositionPolicy
+            )
+            composite_limitations = list(
+                dict.fromkeys(
+                    base_limits
+                    + [
+                        "Composite positions use shortest-arc midpoints of each matching pair of natal longitudes.",
+                        "A composite is a derived longitude set, not an astronomical event chart: houses, angles, and retrograde states are intentionally not generated.",
+                        f"Exactly opposite pairs use the declared opposition policy: {inputs.oppositionPolicy}.",
+                    ]
+                )
+            )
+            derived = DerivedChart(
+                id="midpoint_composite",
+                construction="midpoint_composite",
+                positions=positions,
+                aspects=derived_aspects(positions)
+                if "aspects" in request.features
+                else None,
+                midpointAmbiguities=ambiguities,
+                limitations=composite_limitations,
+            )
+            return ChartStudyResponse(
+                calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                request=request,
+                charts=[first, second],
+                derivedCharts=[derived],
+                limitations=composite_limitations,
+            )
+
+        if isinstance(inputs, CoalescentInputs):
+            first = chart_from_birth(
+                "first_natal", inputs.first, request.bodies, request.features, base_limits
+            )
+            second = chart_from_birth(
+                "second_natal", inputs.second, request.bodies, request.features, base_limits
+            )
+            positions = harmonic_sum_coalescent(first.positions, second.positions)
+            coalescent_limitations = list(
+                dict.fromkeys(
+                    base_limits
+                    + [
+                        "Coalescent is calculated only with the explicitly selected harmonic_sum formula: each pair of ecliptic longitudes is added modulo 360°.",
+                        "Coalescent does not have one universal calculation standard. This result must be labelled with its formula rather than treated as a time-space midpoint chart.",
+                        "This derived longitude set has no astronomical event time, houses, angles, or retrograde states.",
+                    ]
+                )
+            )
+            derived = DerivedChart(
+                id="harmonic_sum_coalescent",
+                construction="harmonic_sum_coalescent",
+                positions=positions,
+                aspects=derived_aspects(positions)
+                if "aspects" in request.features
+                else None,
+                limitations=coalescent_limitations,
+            )
+            return ChartStudyResponse(
+                calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                request=request,
+                charts=[first, second],
+                derivedCharts=[derived],
+                limitations=coalescent_limitations,
+            )
+
+        if isinstance(inputs, DavisonInputs):
+            instant, location = davison_midpoint_context(inputs)
+            davison_limit = (
+                "Davison uses the midpoint in UTC time and the shortest-arc geographic midpoint of two exact natal records; it is a distinct time-space midpoint method, not a composite or coalescent calculation."
+            )
+            chart = chart_at_instant(
+                "davison_time_space_midpoint",
+                instant,
+                location,
+                "UTC",
+                request.bodies,
+                request.features,
+                base_limits + [davison_limit],
+            )
+            return ChartStudyResponse(
+                calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                request=request,
+                charts=[chart],
+                limitations=list(dict.fromkeys(base_limits + [davison_limit])),
+            )
+
+        if isinstance(inputs, MultiChartInputs):
+            multichart_limit = (
+                "Multichart is a container of separately labelled participant layers. It does not average people, derive a relationship chart, or rank outcomes."
+            )
+            charts = multichart_charts(
+                inputs,
+                request.bodies,
+                request.features,
+                base_limits + [multichart_limit],
+            )
+            return ChartStudyResponse(
+                calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                request=request,
+                charts=charts,
+                limitations=list(dict.fromkeys(base_limits + [multichart_limit])),
+            )
+
         if isinstance(inputs, SynastryInputs):
             first = chart_from_birth(
                 "first_natal", inputs.first, request.bodies, request.features, base_limits

@@ -214,6 +214,9 @@ class SwissEphemerisServiceTests(unittest.TestCase):
         self.assertIn("seorbel.txt", factors["proserpina"]["requires"])
         self.assertTrue(any("Fixed-star" in item for item in result["notImplemented"]))
         self.assertIn("directions:solar_arc", result["implemented"]["chartStudies"])
+        self.assertIn("composite:shortest_arc_midpoints", result["implemented"]["chartStudies"])
+        self.assertIn("astrocartography:mc+ic+asc+dsc", result["implemented"]["chartStudies"])
+        self.assertIn("eclipse_search:global+observer_visibility", result["implemented"]["chartStudies"])
 
     def test_solar_return_requires_an_exact_natal_birth_time(self):
         with self.assertRaises(ValueError):
@@ -338,6 +341,121 @@ class SwissEphemerisServiceTests(unittest.TestCase):
             service.position_for(2451545.0, "sun")
 
         self.assertEqual(captured.exception.code, "ephemeris_data_unavailable")
+
+    def test_composite_uses_shortest_arc_midpoints_and_exposes_exact_oppositions(self):
+        first = [
+            service.Position(body="sun", longitudeDegrees=350, sign="Pisces", degreeInSign=20, retrograde=False),
+            service.Position(body="moon", longitudeDegrees=0, sign="Aries", degreeInSign=0, retrograde=False),
+        ]
+        second = [
+            service.Position(body="sun", longitudeDegrees=10, sign="Aries", degreeInSign=10, retrograde=False),
+            service.Position(body="moon", longitudeDegrees=180, sign="Libra", degreeInSign=0, retrograde=False),
+        ]
+
+        positions, ambiguities = service.midpoint_composite(first, second, "omit")
+        selected, selected_ambiguities = service.midpoint_composite(first, second, "first")
+
+        self.assertEqual([position.longitudeDegrees for position in positions], [0])
+        self.assertEqual(ambiguities[0].body, "moon")
+        self.assertEqual([position.longitudeDegrees for position in selected], [0, 0])
+        self.assertEqual(selected_ambiguities, [])
+
+    def test_coalescent_harmonic_sum_is_not_a_midpoint(self):
+        first = [service.Position(body="sun", longitudeDegrees=350, sign="Pisces", degreeInSign=20, retrograde=False)]
+        second = [service.Position(body="sun", longitudeDegrees=20, sign="Aries", degreeInSign=20, retrograde=False)]
+
+        result = service.harmonic_sum_coalescent(first, second)
+
+        self.assertEqual(result[0].longitudeDegrees, 10)
+        self.assertEqual(result[0].sign, "Aries")
+
+    def test_davison_midpoint_requires_exact_times_and_uses_shortest_geographic_arc(self):
+        first = {
+            "localDate": "2000-01-01",
+            "localTime": "00:00",
+            "timeAccuracy": "exact",
+            "timeZone": "UTC",
+            "location": {"latitude": 10, "longitude": 170},
+        }
+        second = {
+            "localDate": "2000-01-03",
+            "localTime": "00:00",
+            "timeAccuracy": "exact",
+            "timeZone": "UTC",
+            "location": {"latitude": 30, "longitude": -170},
+        }
+
+        instant, location = service.davison_midpoint_context(
+            service.DavisonInputs(first=first, second=second)
+        )
+
+        self.assertEqual(instant, datetime(2000, 1, 2, tzinfo=timezone.utc))
+        self.assertEqual(location.latitude, 20)
+        self.assertEqual(location.longitude, 180)
+        with self.assertRaises(ValueError):
+            service.DavisonInputs(first={**first, "timeAccuracy": "approximate"}, second=second)
+
+    def test_multichart_rejects_ambiguous_participant_and_layer_sets(self):
+        natal = {
+            "localDate": "2000-01-01",
+            "localTime": "00:00",
+            "timeAccuracy": "exact",
+            "timeZone": "UTC",
+            "location": {"latitude": 10, "longitude": 20},
+        }
+        with self.assertRaises(ValueError):
+            service.MultiChartInputs(
+                participants=[{"id": "one", "natal": natal}, {"id": "one", "natal": natal}],
+                layers=[{"kind": "natal"}],
+            )
+        with self.assertRaises(ValueError):
+            service.MultiChartInputs(
+                participants=[{"id": "one", "natal": natal}],
+                layers=[{"kind": "transits"}],
+            )
+
+    def test_astrocartography_returns_map_ready_angular_lines(self):
+        instant = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+        with patch.object(service.swe, "sidtime", return_value=0), patch.object(
+            service,
+            "equatorial_coordinates",
+            return_value=(90, 0),
+        ):
+            lines = service.astrocartography_lines(instant, ["sun"], ["mc", "ic", "asc", "dsc"], 10)
+
+        self.assertEqual([(line.body, line.angle) for line in lines], [("sun", "mc"), ("sun", "ic"), ("sun", "asc"), ("sun", "dsc")])
+        self.assertTrue(all(point.longitude == 90 for point in lines[0].points))
+        self.assertTrue(all(point.longitude == -90 for point in lines[1].points))
+        self.assertEqual(lines[2].points[0].longitude, 0)
+        self.assertEqual(lines[3].points[0].longitude, -180)
+
+    def test_eclipse_search_merges_requested_kinds_chronologically(self):
+        start = {
+            "localDate": "2026-01-01",
+            "localTime": "00:00",
+            "timeAccuracy": "exact",
+            "timeZone": "UTC",
+            "location": {"latitude": 0, "longitude": 0},
+        }
+        request = service.EclipseSearchRequest(
+            version="eclipse-search-request-v1",
+            start=start,
+            kinds=["solar", "lunar"],
+            count=2,
+        )
+        responses = iter(
+            [
+                (service.swe.ECL_PARTIAL, (2451547.0,) + (0.0,) * 9),
+                (service.swe.ECL_TOTAL, (2451546.0,) + (0.0,) * 9),
+                (service.swe.ECL_PARTIAL, (2451547.0,) + (0.0,) * 9),
+                (service.swe.ECL_PARTIAL, (2451576.0,) + (0.0,) * 9),
+            ]
+        )
+        with patch.object(service, "next_eclipse", side_effect=lambda *_: next(responses)):
+            events = service.eclipse_events(request)
+
+        self.assertEqual([event.kind for event in events], ["lunar", "solar"])
+        self.assertEqual([event.classification for event in events], ["total", "partial"])
 
     def test_readiness_requires_a_real_swiss_data_calculation(self):
         with TemporaryDirectory() as directory:

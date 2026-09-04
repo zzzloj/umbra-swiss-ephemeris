@@ -29,6 +29,24 @@ transits, secondary progressions, explicitly selected Solar Arc directions,
 and mundane event or seasonal ingress charts. Each calculation keeps its own
 source moment and method in the returned data.
 
+Relationship constructions are deliberately separate. `composite` calculates
+shortest-arc midpoints of matching natal longitudes; exact oppositions must use
+a declared policy and a composite never pretends to have an event time,
+houses, angles, or retrograde state. `coalescent` currently offers only an
+explicit `harmonic_sum` formula (sum matching longitudes modulo 360°), because
+the name has no universal calculation standard. `davison` is the distinct
+time-space midpoint chart: midpoint in UTC time and shortest-arc geographic
+midpoint from two exact natal records. `multichart` is a non-merging container
+of one to six named natal records and their separately labelled natal,
+transit, secondary-progression, Solar Arc, and Solar Return layers.
+
+The service also exposes two astronomical modules. `POST /v1/astrocartography`
+returns map-ready MC, IC, ASC, and DSC line geometry from equatorial Swiss
+Ephemeris coordinates at one exact moment. `POST /v1/eclipses` returns the
+next globally occurring solar and/or lunar eclipses in UTC, with optional
+observer-at-maximum geometry. Neither endpoint interprets a location or an
+eclipse, recommends actions, or predicts outcomes.
+
 ## Source availability for AGPL deployments
 
 `LICENSE` contains the complete GNU AGPL v3 text. The upstream Swiss Ephemeris
@@ -39,8 +57,9 @@ Before activating an AGPL deployment, publish this repository with its build
 instructions, dependency pins, notices, and the exact running changes. Set
 `AGPL_SOURCE_URL` to a durable public URL for that complete corresponding
 source (preferably an immutable release or commit). `GET /source` returns that
-URL without requiring the service key. Until it is configured, `/v1/chart`
-`/v1/solar-return`, and `/v1/chart-study` refuse calculations.
+URL without requiring the service key. Until it is configured, `/v1/chart`,
+`/v1/solar-return`, `/v1/chart-study`, `/v1/astrocartography`, and
+`/v1/eclipses` refuse calculations.
 
 The complete public source project is hosted at
 [`github.com/zzzloj/umbra-swiss-ephemeris`](https://github.com/zzzloj/umbra-swiss-ephemeris).
@@ -84,7 +103,9 @@ uvicorn app:api --host 127.0.0.1 --port 8080
 The service accepts `POST /v1/chart` with the `ephemeris-request-v1` body and
 `POST /v1/solar-return` with the `solar-return-request-v1` body; both require
 the `x-umbra-service-key` header. `POST /v1/chart-study` accepts the
-`chart-study-request-v1` body for the named non-natal methods and has the same
+`chart-study-request-v1` body for the named non-natal methods; `POST
+/v1/astrocartography` accepts `astrocartography-request-v1`; and `POST
+/v1/eclipses` accepts `eclipse-search-request-v1`. Each has the same
 authentication requirement. `GET /healthz` is a non-sensitive readiness probe
 and does not disclose birth data. In AGPL mode, `GET /source` supplies the
 configured public source offer and never exposes configuration secrets.
@@ -105,8 +126,9 @@ scripts/run-local-contract-test.sh
 
 This brings up the service on `127.0.0.1:18080`, verifies its source offer,
 authentication, four actual Swiss-data positions, aspects, Placidus houses,
-one real Solar Return recurrence, and every named non-natal chart study, then
-shuts it down. Its `file://` source offer is deliberately
+one real Solar Return recurrence, every named chart study, astrocartography
+line geometry, and an eclipse-search chronology, then shuts it down. Its
+`file://` source offer is deliberately
 restricted to a developer's loopback test and is not a substitute for the
 public `AGPL_SOURCE_URL` required by a network deployment. See
 [DEPLOYMENT.md](./DEPLOYMENT.md) for the container release sequence.

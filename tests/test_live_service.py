@@ -89,6 +89,17 @@ def post_chart_study(key: str, study: str, inputs: dict):
         return response.status, json.loads(response.read())
 
 
+def post_astronomy_module(key: str, path: str, request_body: dict):
+    request = Request(
+        f"{SERVICE_URL}{path}",
+        data=json.dumps(request_body).encode(),
+        headers={"content-type": "application/json", "x-umbra-service-key": key},
+        method="POST",
+    )
+    with urlopen(request, timeout=15) as response:
+        return response.status, json.loads(response.read())
+
+
 @unittest.skipUnless(
     SERVICE_URL and SERVICE_KEY and EXPECTED_SOURCE_URL,
     "Set loopback integration environment variables to run this test.",
@@ -155,6 +166,16 @@ class LiveServiceContractTests(unittest.TestCase):
         }
         requests = [
             ("synastry", {"first": natal, "second": {**natal, "localDate": "1991-04-20"}}),
+            ("composite", {"first": natal, "second": {**natal, "localDate": "1991-04-20"}, "oppositionPolicy": "omit"}),
+            ("coalescent", {"first": natal, "second": {**natal, "localDate": "1991-04-20"}, "method": "harmonic_sum"}),
+            ("davison", {"first": natal, "second": {**natal, "localDate": "1991-04-20"}}),
+            (
+                "multichart",
+                {
+                    "participants": [{"id": "first", "natal": natal}, {"id": "second", "natal": {**natal, "localDate": "1991-04-20"}}],
+                    "layers": [{"kind": "natal"}, {"kind": "transits", "target": moment}],
+                },
+            ),
             ("horary", {"moment": moment}),
             ("electional", {"candidates": [moment, {**moment, "localTime": "13:00"}]}),
             ("transits", {"natal": natal, "target": moment}),
@@ -192,6 +213,51 @@ class LiveServiceContractTests(unittest.TestCase):
         )
         self.assertEqual(direction_status, 200)
         self.assertIsInstance(direction["directionArcDegrees"], float)
+
+    def test_astrocartography_and_eclipse_modules_use_live_swiss_data(self):
+        moment = {
+            "localDate": "2026-09-04",
+            "localTime": "12:00",
+            "timeAccuracy": "exact",
+            "timeZone": "Europe/Lisbon",
+            "location": {"latitude": 38.7223, "longitude": -9.1393},
+        }
+        astro_status, astro = post_astronomy_module(
+            SERVICE_KEY,
+            "/v1/astrocartography",
+            {
+                "version": "astrocartography-request-v1",
+                "moment": moment,
+                "bodies": ["sun", "moon"],
+                "angles": ["mc", "ic", "asc", "dsc"],
+                "latitudeStepDegrees": 5,
+                "limitations": [],
+            },
+        )
+        self.assertEqual(astro_status, 200)
+        self.assertEqual(astro["version"], "astrocartography-response-v1")
+        self.assertEqual(len(astro["lines"]), 8)
+        self.assertTrue(all(line["points"] for line in astro["lines"]))
+
+        eclipse_status, eclipses = post_astronomy_module(
+            SERVICE_KEY,
+            "/v1/eclipses",
+            {
+                "version": "eclipse-search-request-v1",
+                "start": moment,
+                "kinds": ["solar", "lunar"],
+                "count": 2,
+                "observer": moment["location"],
+                "limitations": [],
+            },
+        )
+        self.assertEqual(eclipse_status, 200)
+        self.assertEqual(eclipses["version"], "eclipse-search-response-v1")
+        self.assertEqual(len(eclipses["eclipses"]), 2)
+        self.assertEqual(
+            sorted(eclipse["maximumInstant"] for eclipse in eclipses["eclipses"]),
+            [eclipse["maximumInstant"] for eclipse in eclipses["eclipses"]],
+        )
 
 
 if __name__ == "__main__":
