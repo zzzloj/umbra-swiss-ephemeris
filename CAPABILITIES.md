@@ -21,6 +21,11 @@ The position-factor list is accepted by `/v1/chart`, `/v1/solar-return`, and
 horary, electional work, transits, secondary progressions, Solar Arc, and
 mundane charts.
 
+`/v1/lunar-calendar` provides a seven-to-fifteen-day local-date window with
+the geocentric tropical Moon's noon position, phase angle, illumination, and
+any sign ingress in the declared timezone. It is astronomical context only;
+the service does not label it as a forecast or prescribe a ritual.
+
 The live data dependency of each extended factor is exposed by
 `GET /capabilities`. A missing file produces no substituted Moshier result.
 
@@ -33,7 +38,7 @@ The live data dependency of each extended factor is exposed by
   and apsides.
 - Additional house systems and points such as Vertex and Equatorial Ascendant.
 - Sidereal zodiac modes and explicit ayanamsha choice.
-- Eclipses, occultations, planetary phases, heliacal events, and rise/set and
+- Occultations, non-lunar planetary phases, heliacal events, and rise/set and
   meridian-transit calculations.
 - Equatorial, horizontal, heliocentric, and topocentric coordinate products,
   declination, distance, and orbital-element outputs.

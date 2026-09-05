@@ -259,6 +259,25 @@ class LiveServiceContractTests(unittest.TestCase):
             [eclipse["maximumInstant"] for eclipse in eclipses["eclipses"]],
         )
 
+        lunar_status, lunar = post_astronomy_module(
+            SERVICE_KEY,
+            "/v1/lunar-calendar",
+            {
+                "version": "lunar-calendar-request-v1",
+                "anchorLocalDate": "2026-09-05",
+                "timeZone": "Europe/Lisbon",
+                "daysBefore": 0,
+                "daysAfter": 0,
+                "limitations": [],
+            },
+        )
+        self.assertEqual(lunar_status, 200)
+        self.assertEqual(lunar["version"], "lunar-calendar-response-v1")
+        self.assertEqual(len(lunar["days"]), 1)
+        self.assertEqual(lunar["days"][0]["moon"]["body"], "moon")
+        self.assertGreaterEqual(lunar["days"][0]["illuminationFraction"], 0)
+        self.assertLessEqual(lunar["days"][0]["illuminationFraction"], 1)
+
         formula_status, formula = post_astronomy_module(
             SERVICE_KEY,
             "/v1/event-formula",

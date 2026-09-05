@@ -85,6 +85,49 @@ class SwissEphemerisServiceTests(unittest.TestCase):
         self.assertEqual(aspects[0].kind, "sextile")
         self.assertEqual(aspects[0].orbDegrees, 4.5)
 
+    def test_lunar_calendar_exposes_measurements_and_a_declared_local_ingress(self):
+        request = service.LunarCalendarRequest(
+            version="lunar-calendar-request-v1",
+            anchorLocalDate="2026-09-05",
+            timeZone="Europe/Moscow",
+            daysBefore=0,
+            daysAfter=0,
+        )
+
+        def position_at_noon(_, body):
+            if body == "moon":
+                return service.Position(
+                    body="moon",
+                    longitudeDegrees=180,
+                    sign="Libra",
+                    degreeInSign=0,
+                    retrograde=False,
+                )
+            return service.Position(
+                body="sun",
+                longitudeDegrees=0,
+                sign="Aries",
+                degreeInSign=0,
+                retrograde=False,
+            )
+
+        ingress = service.LunarIngress(
+            instant="2026-09-05T08:20:00Z",
+            fromSign="Virgo",
+            toSign="Libra",
+        )
+        with patch.object(service, "position_for", side_effect=position_at_noon), patch.object(
+            service, "lunar_ingress_between", return_value=ingress
+        ):
+            days = service.lunar_calendar_days(request)
+
+        self.assertEqual(len(days), 1)
+        self.assertEqual(days[0].localDate, "2026-09-05")
+        self.assertEqual(days[0].moon.sign, "Libra")
+        self.assertEqual(days[0].phaseAngleDegrees, 180)
+        self.assertEqual(days[0].illuminationFraction, 1)
+        self.assertEqual(days[0].ingress, ingress)
+
     def test_unknown_birth_time_cannot_request_houses(self):
         with self.assertRaises(ValueError):
             service.ChartRequest(
@@ -218,6 +261,7 @@ class SwissEphemerisServiceTests(unittest.TestCase):
         self.assertIn("astrocartography:mc+ic+asc+dsc", result["implemented"]["chartStudies"])
         self.assertIn("eclipse_search:global+observer_visibility", result["implemented"]["chartStudies"])
         self.assertIn("event_formula:versioned_house_graph_rules", result["implemented"]["chartStudies"])
+        self.assertIn("local_sign_ingress", result["implemented"]["lunarCalendar"])
 
     def test_solar_return_requires_an_exact_natal_birth_time(self):
         with self.assertRaises(ValueError):

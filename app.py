@@ -699,6 +699,66 @@ class EclipseSearchResponse(BaseModel):
     limitations: list[str]
 
 
+class LunarCalendarRequest(BaseModel):
+    """A short local-date window for public astronomical moon context."""
+
+    version: Literal["lunar-calendar-request-v1"]
+    anchorLocalDate: str
+    timeZone: str
+    daysBefore: int = Field(default=3, ge=0, le=7)
+    daysAfter: int = Field(default=3, ge=0, le=7)
+    limitations: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("anchorLocalDate")
+    @classmethod
+    def valid_anchor_local_date(cls, value: str) -> str:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError("anchorLocalDate must use YYYY-MM-DD")
+        try:
+            date.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError("anchorLocalDate must be a real YYYY-MM-DD date") from error
+        return value
+
+    @field_validator("timeZone")
+    @classmethod
+    def valid_lunar_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("timeZone must be a valid IANA timezone") from error
+        return value
+
+    @model_validator(mode="after")
+    def lunar_calendar_window_is_finite(self) -> "LunarCalendarRequest":
+        if any(len(value) > 500 for value in self.limitations):
+            raise ValueError("each limitation must be 500 characters or shorter")
+        return self
+
+
+class LunarIngress(BaseModel):
+    instant: str
+    fromSign: str
+    toSign: str
+
+
+class LunarCalendarDay(BaseModel):
+    localDate: str
+    referenceInstant: str
+    moon: Position
+    phaseAngleDegrees: float = Field(ge=0, lt=360)
+    illuminationFraction: float = Field(ge=0, le=1)
+    ingress: Optional[LunarIngress] = None
+
+
+class LunarCalendarResponse(BaseModel):
+    version: Literal["lunar-calendar-response-v1"] = "lunar-calendar-response-v1"
+    calculatedAt: str
+    request: LunarCalendarRequest
+    days: list[LunarCalendarDay]
+    limitations: list[str]
+
+
 class FormulaSchoolReference(BaseModel):
     """Provenance travels with a rule set instead of being implied by a label."""
 
@@ -933,6 +993,87 @@ def position_for(jd_ut: float, body: str) -> Position:
         degreeInSign=round(longitude % 30, 6),
         retrograde=float(coordinates[3]) < 0,
     )
+
+
+def utc_iso(instant: datetime) -> str:
+    return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def local_day_bounds(local_day: date, zone: ZoneInfo) -> tuple[datetime, datetime]:
+    """Return the declared civil-day bounds as UTC instants.
+
+    Calendar context is organised by the person's local dates, not fixed 24h
+    UTC segments. ZoneInfo applies the correct offset on either side of a
+    daylight-saving change; the public reference value remains local noon.
+    """
+
+    start = datetime.combine(local_day, time.min, tzinfo=zone).astimezone(timezone.utc)
+    end = datetime.combine(
+        local_day + timedelta(days=1), time.min, tzinfo=zone
+    ).astimezone(timezone.utc)
+    return start, end
+
+
+def lunar_ingress_between(start: datetime, end: datetime) -> Optional[LunarIngress]:
+    """Find the one Moon sign ingress that can occur in a civil day.
+
+    The Moon cannot traverse two full signs in this bounded interval. We first
+    bracket a sign change at the local-day edges, then bisect against Swiss
+    Ephemeris positions. Returning no ingress means the sign did not change
+    during that local date, not that a transit was inferred from a phase.
+    """
+
+    start_jd = julian_day(start)
+    end_jd = julian_day(end)
+    first = position_for(start_jd, "moon")
+    final = position_for(end_jd, "moon")
+    if first.sign == final.sign:
+        return None
+
+    lower_jd = start_jd
+    upper_jd = end_jd
+    for _ in range(40):
+        middle_jd = (lower_jd + upper_jd) / 2
+        if position_for(middle_jd, "moon").sign == first.sign:
+            lower_jd = middle_jd
+        else:
+            upper_jd = middle_jd
+
+    return LunarIngress(
+        instant=utc_iso(utc_datetime_from_jd(upper_jd)),
+        fromSign=first.sign,
+        toSign=final.sign,
+    )
+
+
+def lunar_calendar_days(request: LunarCalendarRequest) -> list[LunarCalendarDay]:
+    """Calculate one compact moon week at local noon for each civil date."""
+
+    zone = ZoneInfo(request.timeZone)
+    anchor = date.fromisoformat(request.anchorLocalDate)
+    result: list[LunarCalendarDay] = []
+    for offset in range(-request.daysBefore, request.daysAfter + 1):
+        local_day = anchor + timedelta(days=offset)
+        local_noon = datetime.combine(local_day, time(12), tzinfo=zone).astimezone(
+            timezone.utc
+        )
+        jd_ut = julian_day(local_noon)
+        moon = position_for(jd_ut, "moon")
+        sun = position_for(jd_ut, "sun")
+        phase_angle = (moon.longitudeDegrees - sun.longitudeDegrees) % 360
+        illumination = (1 - math.cos(math.radians(phase_angle))) / 2
+        start, end = local_day_bounds(local_day, zone)
+        result.append(
+            LunarCalendarDay(
+                localDate=local_day.isoformat(),
+                referenceInstant=utc_iso(local_noon),
+                moon=moon,
+                phaseAngleDegrees=round(phase_angle, 6),
+                illuminationFraction=round(illumination, 6),
+                ingress=lunar_ingress_between(start, end),
+            )
+        )
+    return result
 
 
 def factor_is_available(current: Settings, body: str) -> bool:
@@ -2054,6 +2195,12 @@ def capabilities():
                 "eclipse_search:global+observer_visibility",
                 "event_formula:versioned_house_graph_rules",
             ],
+            "lunarCalendar": [
+                "phase_angle",
+                "illumination",
+                "moon_sign_at_local_noon",
+                "local_sign_ingress",
+            ],
         },
         "extendedFactors": [
             {**factor, "available": factor_is_available(current, factor["id"])}
@@ -2167,6 +2314,42 @@ def search_eclipses(
         calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         request=request,
         eclipses=events,
+        limitations=limitations,
+    )
+
+
+@api.post("/v1/lunar-calendar", response_model=LunarCalendarResponse)
+def lunar_calendar(
+    request: LunarCalendarRequest,
+    current: Settings = Depends(authenticate),
+) -> LunarCalendarResponse:
+    """Return local-date lunar measurements without personal interpretation."""
+
+    configure_ephemeris_data(current)
+    try:
+        days = lunar_calendar_days(request)
+    except ServiceError:
+        raise
+    except swe.Error as error:
+        raise ServiceError(
+            502,
+            "swiss_ephemeris_error",
+            "Swiss Ephemeris could not complete this lunar calendar.",
+        ) from error
+    limitations = list(
+        dict.fromkeys(
+            request.limitations
+            + [
+                "Each row is calculated at local noon for its declared civil date; the Moon can move substantially within a day.",
+                "Sign ingress is a geocentric tropical zodiac boundary crossing in the declared timezone.",
+                "Phase angle and illumination are astronomical context, not a personal forecast or instruction.",
+            ]
+        )
+    )
+    return LunarCalendarResponse(
+        calculatedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        request=request,
+        days=days,
         limitations=limitations,
     )
 
