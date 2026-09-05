@@ -89,6 +89,12 @@ AGPL_SOURCE_URL=https://example.com/umbra-swiss-ephemeris-source
 files. The service rejects a calculation if Swiss data is unavailable instead
 of silently falling back to a lower-precision source.
 
+For the Compose deployment, set the *host* directory through
+`SWE_EPHEMERIS_DATA_DIR`; Compose mounts it read-only at the service's
+`SWE_EPHE_PATH`. Run `scripts/preflight-deployment.sh .env` before building to
+check the exact source offer and the minimum data-file set without starting a
+network service.
+
 For an Astrodienst Professional License deployment, set:
 
 ```text

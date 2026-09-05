@@ -63,6 +63,14 @@ curl --fail http://127.0.0.1:8080/source
 for the source URL, key, or data directory. The service key must be configured
 independently on Umbra's private proxy as `SWISS_EPHEMERIS_SERVICE_KEY`.
 
+The repository also includes a safer preflight that checks the immutable AGPL
+source URL, the required data-file set, and the Compose shape without starting
+a service:
+
+```bash
+scripts/preflight-deployment.sh .env
+```
+
 ## Release verification
 
 1. Run the Python unit suite and `scripts/run-local-contract-test.sh`.
